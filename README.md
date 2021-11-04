@@ -1,5 +1,4 @@
 # CTF-tool
-
 [toc]
 
 ## Start
@@ -25,6 +24,11 @@
 
 ## PWN
 
+- `test_pwn_heap_rwx.cpp` 用來檢查 mappings
+  - heap 能否執行和 kernel 版本有關聯
+  - 如果採用 docker 需要注意 host kernel
+- [Old Ubuntu Releases](http://old-releases.ubuntu.com/releases/)
+
 ### todo
 
 - [ ] format string leak analyser
@@ -42,6 +46,5 @@ Todo
 ```
 /proc/pid/*
 ```
-
 
 
