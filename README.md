@@ -23,7 +23,6 @@
 ```
 
 ## PWN
-
 - `test_pwn_heap_rwx.cpp` 用來檢查 mappings
   - heap 能否執行和 kernel 版本有關聯
   - 如果採用 docker 需要注意 host kernel
@@ -47,4 +46,30 @@ Todo
 /proc/pid/*
 ```
 
+## Docker
 
+- `pwn_docker/`
+
+```bash
+cd pwn_docker/
+docker build . -t ctf_ubuntu1804 --target ctf
+docker run --rm -it ctf_ubuntu1804 /bin/bash
+
+# only devtools
+docker build . -t ubuntu1804 --target basic
+docker build . -t ubuntu_latest --target basic --build-arg VERSION=latest
+
+# ubuntu 20.04
+docker build . -t ctf_ubuntu2004 --target ctf --build-arg VERSION=20.04
+
+# latest
+docker build . -t ctf_ubuntu_latest --target ctf --build-arg VERSION=latest
+
+```
+
+check ubuntu version
+```bash
+docker run --rm -it ctf_ubuntu1804 cat /etc/os-releas
+docker run --rm -it ctf_ubuntu1804 cat /etc/os-releasee
+docker run --rm -it ctf_ubuntu_latest cat /etc/os-release
+```
