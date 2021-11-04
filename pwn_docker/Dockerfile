@@ -5,6 +5,8 @@ FROM ubuntu:${VERSION} AS basic
 RUN apt-get update -y \
 && apt-get install gcc gdb curl vim python3 make -y
 
+ENV LANG en_US.UTF-8 
+
 # install gef
 RUN bash -c "$(curl -fsSL http://gef.blah.cat/sh)"
 
