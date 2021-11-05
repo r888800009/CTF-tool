@@ -12,6 +12,8 @@ RUN apt-get -y install locales \
 && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
 && locale-gen --no-purge en_US.UTF-8
 
+RUN apt-get install tmux -y
+
 # install gef
 RUN bash -c "$(curl -fsSL http://gef.blah.cat/sh)"
 
