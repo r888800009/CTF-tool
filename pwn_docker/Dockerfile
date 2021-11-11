@@ -3,7 +3,7 @@ ARG VERSION=18.04
 FROM ubuntu:${VERSION} AS basic
 
 RUN apt-get update -y \
-&& apt-get install gcc gdb curl vim python3 -y
+&& apt-get install gcc gdb curl vim python3 cmake -y
 
 # install gef
 RUN bash -c "$(curl -fsSL http://gef.blah.cat/sh)"
