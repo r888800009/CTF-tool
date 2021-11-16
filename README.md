@@ -33,8 +33,6 @@ import web.hash_tools
 
 #### Hash Extractor (TODO)
 
-`web/Hash-extractor.py`
-
 use
 
 ```python
