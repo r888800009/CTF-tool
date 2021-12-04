@@ -123,3 +123,5 @@ docker run --rm -it ctf_ubuntu1804 cat /etc/os-release
 docker run --rm -it ctf_ubuntu2004 cat /etc/os-release
 docker run --rm -it ctf_ubuntu_latest cat /etc/os-release
 ```
+
+Maybe need `--cap-add=SYS_PTRACE `
