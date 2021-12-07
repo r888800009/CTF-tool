@@ -99,10 +99,11 @@ Todo
 
 - `pwn_docker/`
 
+Build docker
+
 ```bash
 cd pwn_docker/
 docker build . -t ctf_ubuntu1804 --target ctf
-docker run --rm -it ctf_ubuntu1804 /bin/bash
 
 # only devtools
 docker build . -t ubuntu1804 --target basic
@@ -113,7 +114,13 @@ docker build . -t ctf_ubuntu2004 --target ctf --build-arg VERSION=20.04
 
 # latest
 docker build . -t ctf_ubuntu_latest --target ctf --build-arg VERSION=latest
+```
 
+Run docker
+
+``` bash
+docker run --rm -it ctf_ubuntu1804 /bin/bash
+docker run --rm -it -v $(pwd):/work ctf_ubuntu_latest bash
 ```
 
 check ubuntu version
