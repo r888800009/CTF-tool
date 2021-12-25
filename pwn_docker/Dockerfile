@@ -6,7 +6,7 @@ RUN apt-get update -y \
 && apt-get install gcc gdb curl vim python3 cmake make -y
 
 ENV LANG en_US.UTF-8
-ENV LANGUAGE en_US:en  
+ENV LANGUAGE en_US:en
 ENV LC_ALL en_US.UTF-8
 RUN apt-get -y install locales \
 && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
@@ -30,5 +30,11 @@ RUN apt-get install python3-dev libffi-dev build-essential virtualenvwrapper -y\
 
 # install z3
 RUN pip install z3-solver
+
+# install qemu
+RUN apt-get install qemu-efi qemu-user -y
+
+# install arm libc
+RUN apt-get install libc6-armhf-cross libc6-arm64-cross gdb-multiarch qemu-system-arm -y
 
 CMD ["bash"]
