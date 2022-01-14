@@ -31,6 +31,10 @@ RUN apt-get install python3-dev libffi-dev build-essential virtualenvwrapper -y\
 # install z3
 RUN pip install z3-solver
 
+# install one gadget
+RUN apt-get install ruby -y
+RUN gem install one_gadget
+
 # install qemu
 RUN apt-get install qemu-efi qemu-user -y
 
