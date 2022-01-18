@@ -12,7 +12,7 @@ CTF Framework, Save you time and exploit quickly
 
 ## Dependencies
 
-- iPython (Optional)
+- xonsh
 - docker
 - pwntools
 
