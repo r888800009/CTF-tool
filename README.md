@@ -98,6 +98,8 @@ Todo
 ## Docker
 
 - `pwn_docker/`
+  - `./setup_docker.sh 20.04`
+
 
 Build docker
 
