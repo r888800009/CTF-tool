@@ -41,4 +41,14 @@ RUN apt-get install qemu-efi qemu-user -y
 # install arm libc
 RUN apt-get install libc6-armhf-cross libc6-arm64-cross gdb-multiarch qemu-system-arm -y
 
-CMD ["bash"]
+# install r888800009/CTF-tool/
+RUN apt-get install xonsh -y
+RUN git clone https://github.com/r888800009/CTF-tool/
+
+# install r888800009/dotfile/
+RUN apt-get install zsh sudo -y
+RUN git clone https://github.com/r888800009/dotfile/ ~/dotfile
+RUN cd ~/dotfile ; bash setup_zsh.sh
+RUN zsh ~/.zshrc
+
+CMD ["zsh"]
