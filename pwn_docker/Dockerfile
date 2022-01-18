@@ -22,7 +22,7 @@ FROM basic AS ctf
 RUN apt-get update -y\
 && apt-get install python3 python3-pip python3-dev git libssl-dev libffi-dev build-essential -y\
 && python3 -m pip install --upgrade pip\
-&& python3 -m pip install --upgrade pwntools==4.5.1
+&& python3 -m pip install --upgrade pwntools==4.8.0b0
 
 # install angr
 RUN apt-get install python3-dev libffi-dev build-essential virtualenvwrapper -y\
@@ -50,5 +50,8 @@ RUN apt-get install zsh sudo -y
 RUN git clone https://github.com/r888800009/dotfile/ ~/dotfile
 RUN cd ~/dotfile ; bash setup_zsh.sh
 RUN zsh ~/.zshrc
+
+# install qiling
+RUN pip install qiling
 
 CMD ["zsh"]
