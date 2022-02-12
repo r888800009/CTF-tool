@@ -57,4 +57,8 @@ RUN pip install qiling
 # install proxychains
 RUN apt-get install proxychains -y
 
+# seccomp
+RUN apt-get install gcc ruby-dev -y
+RUN gem install seccomp-tools
+
 CMD ["zsh"]
