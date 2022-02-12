@@ -54,4 +54,7 @@ RUN zsh ~/.zshrc
 # install qiling
 RUN pip install qiling
 
+# install proxychains
+RUN apt-get install proxychains -y
+
 CMD ["zsh"]
