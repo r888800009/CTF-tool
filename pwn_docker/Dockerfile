@@ -62,4 +62,6 @@ RUN apt-get install proxychains -y
 RUN apt-get install gcc ruby-dev libseccomp-dev -y
 RUN gem install seccomp-tools
 
+RUN chsh -s /bin/zsh
+
 CMD ["zsh"]
