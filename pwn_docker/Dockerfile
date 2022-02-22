@@ -62,6 +62,8 @@ RUN apt-get install proxychains -y
 RUN apt-get install gcc ruby-dev libseccomp-dev -y
 RUN gem install seccomp-tools
 
+RUN git clone https://github.com/radareorg/radare2 && radare2/sys/install.sh
+
 RUN chsh -s /bin/zsh
 
 CMD ["zsh"]
