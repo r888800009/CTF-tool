@@ -66,4 +66,7 @@ RUN git clone https://github.com/radareorg/radare2 && radare2/sys/install.sh
 
 RUN chsh -s /bin/zsh
 
+# strace
+RUN apt-get install strace -y
+
 CMD ["zsh"]
