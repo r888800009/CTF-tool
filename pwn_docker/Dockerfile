@@ -69,4 +69,10 @@ RUN chsh -s /bin/zsh
 # strace
 RUN apt-get install strace ltrace -y
 
+# nc
+RUN apt-get install netcat-traditional -y
+
+# ROP
+RUN pip install --upgrade --force-reinstall ROPgadget
+
 CMD ["zsh"]
