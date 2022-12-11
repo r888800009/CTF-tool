@@ -29,7 +29,7 @@ fi
 
 docker_name=ctf_ubuntu_$1
 
-docker build . -t $docker_name --target ctf --build-arg VERSION=$1
+docker build . -t $docker_name --target ctf --build-arg VERSION=$1 $2
 
 echo "Run the following command to run the container:"
 echo "  docker run --privileged --rm -it -v "'$(pwd)'":/work $docker_name"
