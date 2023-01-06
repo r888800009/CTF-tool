@@ -76,6 +76,7 @@ or
   - heap 能否執行和 kernel 版本有關聯
   - 如果採用 docker 需要注意 host kernel
 - [Old Ubuntu Releases](http://old-releases.ubuntu.com/releases/)
+- `./libc-extractor.sh 20.04`
 
 ### todo
 
@@ -100,7 +101,6 @@ Todo
 - `pwn_docker/`
   - `./setup_docker.sh 20.04`
 
-
 Build docker
 
 ```bash
@@ -120,7 +120,7 @@ docker build . -t ctf_ubuntu_latest --target ctf --build-arg VERSION=latest
 
 Run docker
 
-``` bash
+```bash
 docker run --rm -it ctf_ubuntu1804 /bin/bash
 docker run --rm -it -v $(pwd):/work ctf_ubuntu_latest bash
 ```
