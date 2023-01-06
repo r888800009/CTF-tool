@@ -3,7 +3,7 @@ ARG VERSION=18.04
 FROM ubuntu:${VERSION} AS basic
 
 RUN apt-get update -y \
-&& apt-get install gcc gdb curl vim python3 cmake make sudo gawk bison patchelf -y
+&& apt-get install gcc gdb curl vim python3 cmake make sudo file gawk bison patchelf -y
 
 ENV LANG en_US.UTF-8
 ENV LANGUAGE en_US:en
