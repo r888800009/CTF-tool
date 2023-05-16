@@ -86,6 +86,9 @@ or
 - [ ] `exploit.py` template
 - [ ] Predefined hook function for angr an triton
 
+## Fuzzer
+- [r888800009/afl-darwin-dockerfile](https://github.com/r888800009/afl-darwin-dockerfile)
+
 ## Sensitive Path
 
 Todo
