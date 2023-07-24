@@ -5,6 +5,10 @@
 CTF Framework, Save you time and exploit quickly
 
 ## Start
+pwn docker
+```
+python3 start_docker.py 20.04
+```
 
 ```
 ./exploiting
