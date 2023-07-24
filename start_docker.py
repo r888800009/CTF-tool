@@ -26,9 +26,13 @@ if os.system('docker -v') != 0:
 docker_name = 'ctf_ubuntu_' + ubuntu_version
 if os.system('docker images -q ' + docker_name) != 0:
     print("Docker image " + docker_name + " not found, building...")
-    if os.system('docker build . -t ' + docker_name + ' --target ctf --build-arg VERSION=' + ubuntu_version) != 0:
+    current_path = os.getcwd()
+    os.chdir('./pwn_docker')
+    cmd = f'./setup_docker.sh {ubuntu_version}'
+    if os.system(cmd) != 0:
         print("Build failed")
         sys.exit(1)
+    os.chdir(current_path)
 
 # run docker
 os.system(f'docker run --net="host" --privileged --rm -it -v "$(pwd)":/work {docker_name}')
