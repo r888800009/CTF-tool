@@ -6,6 +6,7 @@ ubuntu_versions = ["16.04", "16.10", "17.04", "17.10", "18.04", "18.10", "19.04"
 def print_help():
     print("Usage: python start_docker.py <ubuntu_version>")
     print("Available versions: " + '|'.join(ubuntu_versions))
+    print("Make sure the ubuntu version is on the support list")
     sys.exit(1)
 
 if len(sys.argv) < 2:
@@ -24,15 +25,13 @@ if os.system('docker -v') != 0:
 
 # check if docker image exists
 docker_name = 'ctf_ubuntu_' + ubuntu_version
-if os.system('docker images -q ' + docker_name) != 0:
-    print("Docker image " + docker_name + " not found, building...")
-    current_path = os.getcwd()
-    os.chdir('./pwn_docker')
-    cmd = f'./setup_docker.sh {ubuntu_version}'
-    if os.system(cmd) != 0:
-        print("Build failed")
-        sys.exit(1)
-    os.chdir(current_path)
+current_path = os.getcwd()
+os.chdir('./pwn_docker')
+cmd = f'./setup_docker.sh {ubuntu_version}'
+if os.system(cmd) != 0:
+    print("Build failed")
+    sys.exit(1)
+os.chdir(current_path)
 
 # run docker
 os.system(f'docker run --net="host" --privileged --rm -it -v "$(pwd)":/work {docker_name}')
