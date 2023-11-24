@@ -44,7 +44,8 @@ RUN apt-get install libc6-armhf-cross libc6-arm64-cross gdb-multiarch qemu-syste
 
 # install r888800009/CTF-tool/
 RUN apt-get install xonsh -y
-RUN git clone https://github.com/r888800009/CTF-tool/
+RUN git clone https://github.com/r888800009/CTF-tool/ \
+    && cd CTF-tool && python3 instal_gdb_toolbox.py
 
 # install r888800009/dotfile/
 RUN apt-get install zsh sudo -y
