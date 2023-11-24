@@ -25,6 +25,19 @@ pip install .
 import r809pwn.lib
 ```
 
+## gdb toolbox
+toolbox should run after `apogiatzis/gdb-peda-pwndbg-gef` installed
+
+```bash
+python3 ./instal_gdb_toolbox.py
+```
+
+current toolbox include
+- [r888800009/gdb_toolbox](https://github.com/r888800009/gdb_toolbox)
+- [0n3t04ll/OneGadgetTest](https://github.com/0n3t04ll/OneGadgetTest) [fork](https://github.com/r888800009/OneGadgetTest)
+
+fork is backup if original repo is deleted
+
 ## Dependencies
 
 - xonsh
