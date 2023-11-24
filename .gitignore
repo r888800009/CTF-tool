@@ -1,3 +1,5 @@
 __pycache__
 a.out
 .DS_Store
+/build
+*.egg-info
