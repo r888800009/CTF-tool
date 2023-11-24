@@ -6,7 +6,10 @@ TOOLBOX_PATH = "~/gdb_toolbox"
 TOOLBOX_PATH = os.path.expanduser(TOOLBOX_PATH)
 
 def install_gdb_one_gadget():
-    os.system(f"git clone https://github.com/0n3t04ll/OneGadgetTest.git {TOOLBOX_PATH}/OneGadgetTest")
+    # os.system(f"git clone https://github.com/0n3t04ll/OneGadgetTest.git {TOOLBOX_PATH}/OneGadgetTest")
+    # using my fork until the PR is merged: Fixed SyntaxWarning: "is not" with a literal. Did you mean "!="?
+    # https://github.com/0n3t04ll/OneGadgetTest/pull/1
+    os.system(f"git clone https://github.com/r888800009/OneGadgetTest.git {TOOLBOX_PATH}/OneGadgetTest")
     os.system(f"echo 'source {TOOLBOX_PATH}/OneGadgetTest/ogt.py' >> ~/.gdbinit")
 
 def install_r809_gdb_toolbox():
