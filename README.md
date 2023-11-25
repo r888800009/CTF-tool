@@ -38,6 +38,13 @@ current toolbox include
 
 fork is backup if original repo is deleted
 
+there are some useful tools, but not include in this repo,
+- symbolic execution
+  - [SQLab/symgdb](https://github.com/SQLab/symgdb) 
+    - only support python2
+  - [andreafioraldi/angrgdb](https://github.com/andreafioraldi/angrgdb/tree/master)
+    - crash on new version angr, because of `angr` api change
+  
 ## Dependencies
 
 - xonsh
