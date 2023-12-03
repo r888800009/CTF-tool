@@ -44,6 +44,9 @@ there are some useful tools, but not include in this repo,
     - only support python2
   - [andreafioraldi/angrgdb](https://github.com/andreafioraldi/angrgdb/tree/master)
     - crash on new version angr, because of `angr` api change
+- misc
+  - [io12/pwninit: pwninit - automate starting binary exploit challenges](https://github.com/io12/pwninit)
+    - it may be useful for finding unstrip binary, maybe
   
 ## Dependencies
 
