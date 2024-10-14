@@ -1,0 +1,10 @@
+[project]
+name = "r809-ctf-tool"
+version = "0.1.0"
+description = "r888800009's binary exploit/reverse tools, docker environment"
+authors = [
+    {name = "Lin, Yong Xiang", email = "r888800009@gmail.com"},
+]
+dependencies = []
+requires-python = ">=3.8"
+readme = "README.md"

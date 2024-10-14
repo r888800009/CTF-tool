@@ -14,7 +14,7 @@ python3 start_docker.py 20.04
 ```bash
 git clone https://github.com/r888800009/CTF-tool
 cd CTF-tool
-pip install .
+pdm install
 ```
 
 ```python
