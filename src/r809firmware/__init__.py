@@ -1,4 +1,5 @@
 import subprocess
+import os
 
 
 def invoke_binwalk(file_path):
@@ -15,10 +16,16 @@ def get_offset(binwalk_line):
 
 
 def list_file_system(file_path):
-    for line in iter(invoke_binwalk(file_path).stdout.readline, ""):
+    # extend file_path to full path
+    file_path = os.path.expanduser(file_path)
+    proc = invoke_binwalk(file_path)
+    for line in iter(proc.stdout.readline, b""):
         if b"filesystem" in line.lower():
             print(line.decode())
             print("\t" + get_mount_hint(file_path, get_offset(line)))
+
+    proc.stdout.close()
+    proc.wait()
 
 
 if __name__ == "__main__":
