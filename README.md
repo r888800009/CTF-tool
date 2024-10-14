@@ -15,6 +15,7 @@ python3 start_docker.py 20.04
 git clone https://github.com/r888800009/CTF-tool
 cd CTF-tool
 pdm install
+$(pdm venv activate)
 ```
 
 ```python
@@ -43,7 +44,14 @@ there are some useful tools, but not include in this repo,
 - misc
   - [io12/pwninit: pwninit - automate starting binary exploit challenges](https://github.com/io12/pwninit)
     - it may be useful for finding unstrip binary, maybe
-  
+
+## firmware analyze
+We call [binwalk](https://github.com/ReFirmLabs/binwalk) on the backend
+```
+import r809firmware
+r809firmware.list_file_system('~/firmware.img')
+```
+
 ## Dependencies
 
 - docker
