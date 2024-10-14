@@ -1,6 +1,0 @@
-#!/usr/bin/env xonsh -i
-
-import sys
-sys.path.insert(0, '')
-
-from import_lib import *

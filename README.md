@@ -10,10 +10,6 @@ pwn docker
 python3 start_docker.py 20.04
 ```
 
-```
-./exploiting
-```
-
 ### r809pwn
 ```bash
 git clone https://github.com/r888800009/CTF-tool
@@ -50,7 +46,6 @@ there are some useful tools, but not include in this repo,
   
 ## Dependencies
 
-- xonsh
 - docker
 - pwntools
 
@@ -59,14 +54,14 @@ there are some useful tools, but not include in this repo,
 ### SQL encoder
 
 ```
->>> sql.mysql.concat('asd')
+>>> r809web.mysql.concat('asd')
 'concat(0x61,0x73,0x64)'
 ```
 
 ### Hash Tool chains (TODO)
 
 ```python
-import web.hash_tools
+import r809web.hash_tools
 ```
 
 #### Hash Extractor (TODO)
