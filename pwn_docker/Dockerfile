@@ -36,7 +36,7 @@ RUN apt-get install ruby -y
 RUN gem install one_gadget
 
 # install qemu
-RUN apt-get install qemu-efi qemu-user -y
+RUN apt-get install qemu-user -y
 
 # install arm libc
 RUN apt-get install libc6-armhf-cross libc6-arm64-cross gdb-multiarch qemu-system-arm -y
