@@ -22,12 +22,11 @@ FROM basic AS ctf
 # install pwntools
 RUN apt-get update -y\
 && apt-get install python3 python3-pip python3-dev libssl-dev libffi-dev -y\
-&& python3 -m pip install --upgrade pip\
-&& python3 -m pip install --upgrade pwntools
+&& python3 -m pip install --upgrade pwntools --break-system-packages
 
 # install angr
 RUN apt-get install python3-dev libffi-dev build-essential virtualenvwrapper -y\
-&& python3 -m pip install angr
+&& python3 -m pip install angr --break-system-packages
 
 # install one gadget
 RUN apt-get install ruby -y
@@ -41,7 +40,7 @@ RUN if ruby -e 'exit(RUBY_VERSION >= "3.3")'; then \
     fi
 
 # install qemu
-RUN apt-get install qemu-efi qemu-user -y
+RUN apt-get install qemu-user -y
 
 # install arm libc
 RUN apt-get install libc6-armhf-cross libc6-arm64-cross gdb-multiarch qemu-system-arm -y
@@ -58,7 +57,7 @@ RUN cd ~/dotfile ; bash setup_zsh.sh
 RUN zsh ~/.zshrc
 
 # install qiling
-RUN python3 -m pip install qiling
+RUN python3 -m pip install qiling --break-system-packages
 
 # install proxychains
 RUN apt-get install proxychains -y
@@ -67,7 +66,7 @@ RUN apt-get install proxychains -y
 RUN apt-get install gcc ruby-dev libseccomp-dev -y
 RUN gem install seccomp-tools
 
-RUN git clone https://github.com/radareorg/radare2 && radare2/sys/install.sh && python3 -m pip install r2pipe
+RUN git clone https://github.com/radareorg/radare2 && radare2/sys/install.sh && python3 -m pip install r2pipe --break-system-packages
 
 RUN chsh -s /bin/zsh
 
@@ -78,7 +77,7 @@ RUN apt-get install strace ltrace -y
 RUN apt-get install netcat-traditional -y
 
 # ROP
-RUN python3 -m pip install --upgrade --force-reinstall ROPgadget
+RUN python3 -m pip install --upgrade --force-reinstall ROPgadget --break-system-packages
 
 # ropr
 RUN apt-get update -y \
