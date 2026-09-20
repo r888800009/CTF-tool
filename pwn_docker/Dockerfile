@@ -65,7 +65,11 @@ RUN apt-get install proxychains -y
 
 # seccomp
 RUN apt-get install gcc ruby-dev libseccomp-dev -y
-RUN gem install seccomp-tools
+RUN if ruby -e 'exit(RUBY_VERSION >= "3.1")'; then \
+        gem install seccomp-tools; \
+    else \
+        gem install seccomp-tools -v 1.6.1; \
+    fi
 
 RUN git clone https://github.com/radareorg/radare2 && radare2/sys/install.sh && python3 -m pip install r2pipe
 
