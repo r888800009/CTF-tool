@@ -86,7 +86,10 @@ RUN python3 -m pip install --upgrade --force-reinstall ROPgadget
 
 # ropr
 RUN apt-get update -y \
-&& apt-get install cargo -y \
-&& cargo install ropr --version 0.2.26
+&& apt-get install curl -y \
+&& curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init \
+&& sh /tmp/rustup-init -y --profile minimal --default-toolchain stable \
+&& /root/.cargo/bin/cargo install ropr --version 0.2.26
+ENV PATH=/root/.cargo/bin:$PATH
 
 CMD ["zsh"]
