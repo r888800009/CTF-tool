@@ -5,9 +5,9 @@ FROM ubuntu:${VERSION} AS basic
 RUN apt-get update -y \
 && apt-get install gcc gdb curl vim python3 cmake make sudo file gawk bison patchelf -y
 
-ENV LANG en_US.UTF-8
-ENV LANGUAGE en_US:en
-ENV LC_ALL en_US.UTF-8
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
 
 RUN apt-get -y install locales \
 && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
@@ -34,7 +34,14 @@ RUN python3 -m pip install z3-solver
 
 # install one gadget
 RUN apt-get install ruby -y
-RUN gem install one_gadget
+# Newer one_gadget releases require Ruby >= 3.3. Use the latest release when
+# the selected Ubuntu image provides a compatible Ruby, otherwise use the
+# newest one_gadget release compatible with older Ubuntu images.
+RUN if ruby -e 'exit(RUBY_VERSION >= "3.3")'; then \
+        gem install one_gadget; \
+    else \
+        gem install one_gadget -v 1.8.2; \
+    fi
 
 # install qemu
 RUN apt-get install qemu-efi qemu-user -y
@@ -75,5 +82,10 @@ RUN apt-get install netcat-traditional -y
 
 # ROP
 RUN python3 -m pip install --upgrade --force-reinstall ROPgadget
+
+# ropr
+RUN apt-get update -y \
+&& apt-get install cargo -y \
+&& cargo install ropr --version 0.2.26
 
 CMD ["zsh"]
