@@ -8,6 +8,7 @@ RUN apt-get update -y \
 ENV LANG=en_US.UTF-8
 ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 RUN apt-get -y install locales \
 && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
@@ -22,11 +23,11 @@ FROM basic AS ctf
 # install pwntools
 RUN apt-get update -y\
 && apt-get install python3 python3-pip python3-dev libssl-dev libffi-dev -y\
-&& python3 -m pip install --upgrade pwntools --break-system-packages
+&& python3 -m pip install --upgrade pwntools
 
 # install angr
 RUN apt-get install python3-dev libffi-dev build-essential virtualenvwrapper -y\
-&& python3 -m pip install angr --break-system-packages
+&& python3 -m pip install angr
 
 # install one gadget
 RUN apt-get install ruby -y
@@ -36,7 +37,7 @@ RUN apt-get install ruby -y
 RUN if ruby -e 'exit(RUBY_VERSION >= "3.3")'; then \
         gem install one_gadget; \
     else \
-        gem install one_gadget -v 1.8.2; \
+        gem install one_gadget -v 1.8.1; \
     fi
 
 # install qemu
@@ -57,7 +58,7 @@ RUN cd ~/dotfile ; bash setup_zsh.sh
 RUN zsh ~/.zshrc
 
 # install qiling
-RUN python3 -m pip install qiling --break-system-packages
+RUN python3 -m pip install qiling
 
 # install proxychains
 RUN apt-get install proxychains -y
@@ -66,7 +67,7 @@ RUN apt-get install proxychains -y
 RUN apt-get install gcc ruby-dev libseccomp-dev -y
 RUN gem install seccomp-tools
 
-RUN git clone https://github.com/radareorg/radare2 && radare2/sys/install.sh && python3 -m pip install r2pipe --break-system-packages
+RUN git clone https://github.com/radareorg/radare2 && radare2/sys/install.sh && python3 -m pip install r2pipe
 
 RUN chsh -s /bin/zsh
 
@@ -77,7 +78,7 @@ RUN apt-get install strace ltrace -y
 RUN apt-get install netcat-traditional -y
 
 # ROP
-RUN python3 -m pip install --upgrade --force-reinstall ROPgadget --break-system-packages
+RUN python3 -m pip install --upgrade --force-reinstall ROPgadget
 
 # ropr
 RUN apt-get update -y \
