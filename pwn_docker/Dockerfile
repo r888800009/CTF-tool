@@ -29,9 +29,6 @@ RUN apt-get update -y\
 RUN apt-get install python3-dev libffi-dev build-essential virtualenvwrapper -y\
 && python3 -m pip install angr
 
-# install z3
-RUN python3 -m pip install z3-solver
-
 # install one gadget
 RUN apt-get install ruby -y
 # Newer one_gadget releases require Ruby >= 3.3. Use the latest release when
