@@ -1,5 +1,6 @@
-# FROM ubuntu:18.04
-ARG VERSION=18.04
+# Ubuntu 18.04 ships Python 3.6 and an old GDB.  Current GEF/pwndbg
+# releases require a newer Python/GDB pair (GEF uses Python 3.10 syntax).
+ARG VERSION=22.04
 FROM ubuntu:${VERSION} AS basic
 
 RUN apt-get update -y \
@@ -16,8 +17,20 @@ RUN apt-get -y install locales \
 
 RUN apt-get install tmux git build-essential -y
 
-# install gdb-peda-pwndbg-gef
-RUN git clone https://github.com/apogiatzis/gdb-peda-pwndbg-gef && cd gdb-peda-pwndbg-gef && ./install.sh && cd /
+# Install debugger helpers according to the Python/GDB shipped by Ubuntu.
+# The latest combined installer is not compatible with Ubuntu 18.04/20.04:
+# its GEF code contains Python 3.10 syntax (``match``).
+RUN case "${VERSION}" in \
+    16.04|16.10|17.04|17.10|18.04) \
+        git clone --depth 1 --branch 2021.10 https://github.com/hugsy/gef.git /root/gef && \
+        printf '\nsource /root/gef/gef.py\n' >> /root/.gdbinit ;; \
+    18.10|19.04|19.10|20.04|20.10|21.04|21.10) \
+        git clone --depth 1 --branch 2022.01 https://github.com/hugsy/gef.git /root/gef && \
+        printf '\nsource /root/gef/gef.py\n' >> /root/.gdbinit ;; \
+    *) \
+        git clone https://github.com/apogiatzis/gdb-peda-pwndbg-gef && \
+        cd gdb-peda-pwndbg-gef && ./install.sh ;; \
+    esac
 
 FROM basic AS ctf
 # install pwntools
