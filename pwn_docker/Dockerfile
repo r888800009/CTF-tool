@@ -1,7 +1,7 @@
-# Ubuntu 18.04 ships Python 3.6 and an old GDB.  Current GEF/pwndbg
-# releases require a newer Python/GDB pair (GEF uses Python 3.10 syntax).
+# Ubuntu 18.04/20.04 ship older Python versions embedded in GDB.
 ARG VERSION=22.04
 FROM ubuntu:${VERSION} AS basic
+ARG VERSION
 
 RUN apt-get update -y \
 && apt-get install gcc gdb curl vim python3 cmake make sudo file gawk bison patchelf -y
@@ -17,16 +17,13 @@ RUN apt-get -y install locales \
 
 RUN apt-get install tmux git build-essential -y
 
-# Install debugger helpers according to the Python/GDB shipped by Ubuntu.
-# The latest combined installer is not compatible with Ubuntu 18.04/20.04:
-# its GEF code contains Python 3.10 syntax (``match``).
+# Install PEDA, pwndbg and GEF together. The installer's gdbinit provides
+# init-peda, init-pwndbg and init-gef so the debugger can be switched.
 RUN case "${VERSION}" in \
-    16.04|16.10|17.04|17.10|18.04) \
-        git clone --depth 1 --branch 2021.10 https://github.com/hugsy/gef.git /root/gef && \
-        printf '\nsource /root/gef/gef.py\n' >> /root/.gdbinit ;; \
-    18.10|19.04|19.10|20.04|20.10|21.04|21.10) \
-        git clone --depth 1 --branch 2022.01 https://github.com/hugsy/gef.git /root/gef && \
-        printf '\nsource /root/gef/gef.py\n' >> /root/.gdbinit ;; \
+    16.04|16.10|17.04|17.10|18.04|18.10|19.04|19.10|20.04|20.10|21.04|21.10) \
+        git clone https://github.com/apogiatzis/gdb-peda-pwndbg-gef /tmp/gdb-tools && \
+        sed -i 's#git clone https://github.com/hugsy/gef.git ~/gef#git clone --branch 2024.06 https://github.com/hugsy/gef.git ~/gef#' /tmp/gdb-tools/install.sh && \
+        cd /tmp/gdb-tools && ./install.sh ;; \
     *) \
         git clone https://github.com/apogiatzis/gdb-peda-pwndbg-gef && \
         cd gdb-peda-pwndbg-gef && ./install.sh ;; \
