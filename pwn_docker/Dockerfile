@@ -30,10 +30,18 @@ RUN case "${VERSION}" in \
     esac
 
 FROM basic AS ctf
+ARG VERSION
 # install pwntools
 RUN apt-get update -y\
 && apt-get install python3 python3-pip python3-dev libssl-dev libffi-dev -y\
-&& python3 -m pip install --upgrade pwntools
+&& if [ "${VERSION}" = "18.04" ]; then \
+       python3 -m pip install --upgrade \
+           'pip<22' 'setuptools<60' wheel setuptools-rust==1.1.2 \
+       && python3 -m pip install \
+           'cryptography==3.4.8' 'paramiko==2.12.0' 'pwntools==4.7.0'; \
+   else \
+       python3 -m pip install --upgrade pwntools; \
+   fi
 
 # install angr
 RUN apt-get install python3-dev libffi-dev build-essential virtualenvwrapper -y\
@@ -77,11 +85,19 @@ RUN apt-get install proxychains -y
 RUN apt-get install gcc ruby-dev libseccomp-dev -y
 RUN if ruby -e 'exit(RUBY_VERSION >= "3.1")'; then \
         gem install seccomp-tools; \
-    else \
+    elif ruby -e 'exit(RUBY_VERSION >= "2.6")'; then \
         gem install seccomp-tools -v 1.6.1; \
+    else \
+        gem install seccomp-tools -v 1.5.0; \
     fi
 
-RUN git clone https://github.com/radareorg/radare2 && radare2/sys/install.sh && python3 -m pip install r2pipe
+RUN if [ "${VERSION}" = "18.04" ]; then \
+        git clone --depth 1 --branch 5.9.0 https://github.com/radareorg/radare2; \
+    else \
+        git clone https://github.com/radareorg/radare2; \
+    fi \
+    && radare2/sys/install.sh \
+    && python3 -m pip install r2pipe
 
 RUN chsh -s /bin/zsh
 
