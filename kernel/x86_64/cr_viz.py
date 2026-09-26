@@ -1,8 +1,8 @@
 """x86_64 control-register visualizer (GDB plugin).
 
 Source this in gdb (typically while debugging an x86_64 kernel through a QEMU gdb
-stub); it starts the shared register web view and adds the `crviz` and `sync`
-commands. See kernel/README.md for details. The heavy lifting lives in
+stub); it starts the shared register web view and adds the `crviz` command (run
+`crviz sync` to push values). See kernel/README.md for details. Heavy lifting in
 kernel/regviz_common.py; this file only supplies the x86_64 register list.
 """
 

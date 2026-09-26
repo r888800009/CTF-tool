@@ -3,7 +3,8 @@
 GDB plugins that render a CPU's control / system registers as **interactive bit
 tables** in your browser. Hover any bit to see its decoded state (SET / clear),
 a short description, and the whole register value. The page only updates when you
-explicitly run `sync` in gdb — nothing is read from the target automatically.
+explicitly run the `<viz> sync` subcommand in gdb — nothing is read from the
+target automatically.
 
 These are meant for debugging a kernel through a live gdb stub (typically QEMU
 `-s -S`) where you want to eyeball paging mode, privilege state, fault
@@ -51,25 +52,28 @@ Sourcing the file:
 - starts a small local web server (see the port in the table above),
 - opens the page in your browser (skipped silently on headless machines — just
   open the printed URL yourself),
-- registers a `sync` command plus the per-arch web-control command.
+- registers a single per-arch command (`crviz` / `armviz` / `csrviz` / `cp0viz`)
+  with subcommands.
 
-Then, whenever execution stops and you want to inspect the registers:
+Then, whenever execution stops and you want to inspect the registers, run the
+`sync` subcommand of that command (x86_64 shown here):
 
 ```gdb
-(gdb) sync
+(gdb) crviz sync      # or armviz sync / csrviz sync / cp0viz sync
 ```
 
-The page reflects the new values within a second. `sync` is the *only* thing that
-reads registers, so the view always shows a snapshot you asked for.
+The page reflects the new values within a second. `<viz> sync` is the *only* thing
+that reads registers, so the view always shows a snapshot you asked for.
 
 ## Commands
 
-Each plugin registers the same two commands (the control command name differs per
-arch — `crviz` / `armviz` / `csrviz` / `cp0viz`, shown here as `<viz>`):
+Each plugin registers one command, named per arch — `crviz` / `armviz` / `csrviz`
+/ `cp0viz`, shown here as `<viz>`. There is no bare global `sync`; it is a
+subcommand so it never collides with anything else in your gdb session.
 
 | Command | Description |
 | --- | --- |
-| `sync` | Read the registers now and push them to the web page. |
+| `<viz> sync` | Read the registers now and push them to the web page. |
 | `<viz>` / `<viz> status` | Show whether the server is running and the last sync time. |
 | `<viz> start [HOST] [PORT]` | Start the server, optionally on a specific bind address and/or port. |
 | `<viz> stop` | Stop the server. |
@@ -111,5 +115,5 @@ network you trust — anyone who can reach the port can view the register snapsh
 qemu-system-x86_64 -s -S -kernel <your-kernel> ...   # -s = gdb stub on :1234, -S = pause at start
 gdb -ex 'target remote :1234' -ex 'source kernel/x86_64/cr_viz.py'
 # ... set breakpoints, continue, then when stopped:
-(gdb) sync
+(gdb) crviz sync
 ```

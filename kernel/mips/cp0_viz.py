@@ -1,7 +1,7 @@
 """MIPS CP0 (coprocessor 0) register visualizer (GDB plugin).
 
 Source this in gdb while debugging a MIPS kernel through a QEMU gdb stub; it
-starts the shared register web view and adds the `cp0viz` and `sync` commands.
+starts the shared register web view and adds the `cp0viz` command (`cp0viz sync`).
 See kernel/README.md. Shared logic lives in kernel/regviz_common.py; this file
 only supplies the CP0 register list.
 

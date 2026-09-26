@@ -1,7 +1,7 @@
 """RISC-V control & status register (CSR) visualizer (GDB plugin).
 
 Source this in gdb while debugging a RISC-V kernel through a QEMU gdb stub; it
-starts the shared register web view and adds the `csrviz` and `sync` commands.
+starts the shared register web view and adds the `csrviz` command (`csrviz sync`).
 See kernel/README.md. Shared logic lives in kernel/regviz_common.py; this file
 only supplies the RISC-V CSR list.
 """

@@ -136,7 +136,9 @@ def _make_handler():
             elif path == "/regs.js":
                 self._send_file(self.server.regs_path, "application/javascript; charset=utf-8")
             elif path == "/data":
-                body = json.dumps(self.server.state.snapshot()).encode()
+                snap = self.server.state.snapshot()
+                snap["prefix"] = self.server.prefix  # so the page can show `<prefix> sync`
+                body = json.dumps(snap).encode()
                 self._send(200, body, "application/json")
             else:
                 self._send(404, b"not found", "text/plain; charset=utf-8")
@@ -184,6 +186,7 @@ class Server:
             return
         httpd.state = self.state
         httpd.regs_path = self.regs_path
+        httpd.prefix = self.prefix
         self._httpd = httpd
         # Keep the module stash pointing at the running server so a later
         # re-source reuses it (and `stop` can clear it) rather than colliding.
@@ -196,7 +199,8 @@ class Server:
         if host not in ("127.0.0.1", "localhost", "::1"):
             print("[%s] bound to %s — reachable from other machines on the network"
                   % (self.prefix, host))
-        print("[%s] run `sync` in gdb to push the current register values" % self.prefix)
+        print("[%s] run `%s sync` in gdb to push the current register values"
+              % (self.prefix, self.prefix))
         if open_browser:
             try:
                 webbrowser.open(self.url)
@@ -254,9 +258,12 @@ class Server:
 
 
 class _ControlCommand(gdb.Command):
-    """Control a register web view: <prefix> [start [HOST] [PORT] | stop | status].
+    """Control a register web view.
 
-    HOST defaults to 127.0.0.1 (loopback only). Pass 0.0.0.0 to listen on every
+    Usage: <prefix> [start [HOST] [PORT] | sync | stop | status]
+
+    `<prefix> sync` reads the registers now and pushes them to the page. HOST
+    defaults to 127.0.0.1 (loopback only); pass 0.0.0.0 to listen on every
     interface so a browser on another machine can reach it.
     """
 
@@ -270,6 +277,12 @@ class _ControlCommand(gdb.Command):
             self._server.status()
             return
         sub = tokens[0]
+        if sub == "sync":
+            if not self._server.running:
+                print("[%s] web view is not running; starting it now" % self._server.prefix)
+                self._server.start()
+            self._server.sync()
+            return
         if sub == "stop":
             self._server.stop()
             return
@@ -278,24 +291,11 @@ class _ControlCommand(gdb.Command):
         elif sub.isdigit() or ":" in sub or _looks_like_host(sub):
             rest = tokens  # `<prefix> 8000` / `<prefix> 0.0.0.0` shorthand
         else:
-            print("usage: %s [start [HOST] [PORT] | stop | status]" % self._server.prefix)
+            print("usage: %s [start [HOST] [PORT] | sync | stop | status]"
+                  % self._server.prefix)
             return
         host, port = _parse_host_port(rest)
         self._server.start(port=port, host=host)
-
-
-class _SyncCommand(gdb.Command):
-    """Read the registers now and push them to the register web view."""
-
-    def __init__(self, server):
-        super().__init__("sync", gdb.COMMAND_USER)
-        self._server = server
-
-    def invoke(self, arg, from_tty):
-        if not self._server.running:
-            print("[%s] web view is not running; starting it now" % self._server.prefix)
-            self._server.start()
-        self._server.sync()
 
 
 def install(*, prefix, default_port, directory, regs_js, exprs, label):
@@ -324,7 +324,6 @@ def install(*, prefix, default_port, directory, regs_js, exprs, label):
         server.exprs = exprs
 
     _ControlCommand(server)
-    _SyncCommand(server)
 
     if not server.running:
         server.start()

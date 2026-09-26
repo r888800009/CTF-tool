@@ -1,7 +1,7 @@
 """AArch64 (ARM64) system-register visualizer (GDB plugin).
 
 Source this in gdb while debugging an aarch64 kernel through a QEMU gdb stub; it
-starts the shared register web view and adds the `armviz` and `sync` commands.
+starts the shared register web view and adds the `armviz` command (`armviz sync`).
 See kernel/README.md. Shared logic lives in kernel/regviz_common.py; this file
 only supplies the AArch64 register list.
 """

@@ -99,7 +99,7 @@
   <div class="status">
     <span class="dot" id="dot"></span>
     <span id="status-text">尚未同步</span>
-    <span class="hint">— 在 gdb 下 <code>sync</code> 更新</span>
+    <span class="hint" id="hint">— 在 gdb 下 <code>sync</code> 更新</span>
   </div>
 
   <div id="regs"></div>
@@ -294,8 +294,10 @@ async function poll() {
     }
     const dot = document.getElementById("dot");
     const txt = document.getElementById("status-text");
+    const cmd = (j.prefix || "") + " sync";
+    document.getElementById("hint").innerHTML = `— 在 gdb 下 <code>${cmd.trim()}</code> 更新`;
     if (!j.synced) {
-      dot.className = "dot"; txt.textContent = "尚未同步 — 請在 gdb 下 sync";
+      dot.className = "dot"; txt.textContent = `尚未同步 — 請在 gdb 下 ${cmd.trim()}`;
     } else {
       const age = Date.now() / 1000 - j.synced_at;
       const when = new Date(j.synced_at * 1000).toLocaleTimeString();
