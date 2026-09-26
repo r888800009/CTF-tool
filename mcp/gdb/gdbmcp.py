@@ -38,11 +38,13 @@ pending stop), gdb's main thread is busy and queued commands only run once it
 stops. Interrupt with Ctrl-C in your gdb terminal as usual.
 """
 
+import errno
 import json
 import os
 import signal
 import socket
 import threading
+import time
 
 import gdb  # provided by gdb's embedded Python; only importable inside gdb
 
@@ -84,6 +86,13 @@ def _any_thread_running():
     try:
         inf = gdb.selected_inferior()
         return any(t.is_running() for t in inf.threads())
+    except gdb.error as exc:
+        # Remote/qemu stubs refuse thread queries while the target is running,
+        # raising "Cannot execute this command while the target is running." That
+        # message is itself proof that it IS running, so report True.
+        if "target is running" in str(exc).lower():
+            return True
+        return False
     except Exception:  # noqa: BLE001
         return False
 
@@ -359,12 +368,23 @@ class _Bridge:
             return
 
         # Bind the NEW socket before touching the old one, so a failed (re)bind
-        # never leaves us with no listener.
-        try:
-            srv, addr = self._make_server(host, port, sock_path)
-        except OSError as exc:
+        # never leaves us with no listener. Retry briefly on EADDRINUSE: a listener
+        # we just stopped (or one from a previous source) can take a moment to be
+        # released by the OS, and re-sourcing should not lose that race.
+        srv = addr = None
+        last_exc = None
+        for attempt in range(10):  # ~1.8s total
+            try:
+                srv, addr = self._make_server(host, port, sock_path)
+                break
+            except OSError as exc:
+                last_exc = exc
+                if exc.errno != errno.EADDRINUSE:
+                    break
+                time.sleep(0.2)
+        if srv is None:
             where = f" on {self.addr}" if self.running else ""
-            print(f"[gdbmcp] failed to bind {target} ({exc}). The current bridge"
+            print(f"[gdbmcp] failed to bind {target} ({last_exc}). The current bridge"
                   f"{where} is left running. Pick another port: gdbmcp start <PORT>")
             return
 
@@ -403,7 +423,7 @@ class _Bridge:
             print("[gdbmcp] not running")
 
 
-_VERSION = 6  # bump when the bridge implementation changes so re-sourcing hot-reloads
+_VERSION = 8  # bump when the bridge implementation changes so re-sourcing hot-reloads
 
 
 class _GdbmcpCommand(gdb.Command):
