@@ -1,0 +1,22 @@
+[project]
+name = "gdb-mcp"
+version = "0.1.0"
+description = "Standalone MCP server that attaches to your own running GDB (pwndbg/gef/peda friendly) for binary exploitation and reverse engineering."
+authors = [
+    {name = "Lin, Yong Xiang", email = "r888800009@gmail.com"},
+]
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+    "mcp>=2.0.0",
+]
+
+[project.scripts]
+gdb-mcp = "server:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["server", "bridge"]
