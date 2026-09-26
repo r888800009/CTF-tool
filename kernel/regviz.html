@@ -99,6 +99,12 @@
   .pt-fl b { color: #7ee787; font-weight: 600; }
   .pt-err { color: var(--warn); font-size: 12.5px; padding: 4px 6px; }
   .pt-loading { color: var(--muted); font-size: 12.5px; padding: 4px 6px; }
+  .pt-np { opacity: .42; }
+  .pt-toolbar { font-size: 13px; color: var(--muted); margin-bottom: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .pt-toolbar select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 8px; font-size: 13px;
+  }
 
   #tip {
     position: fixed; z-index: 50; pointer-events: none;
@@ -370,7 +376,36 @@ function buildPtSection() {
   root.className = "pt-wrap";
   root.innerHTML =
     `<h2>${PT.title || "Page tables"}</h2>` +
-    `<div class="pt-hint" id="pt-hint"></div><div id="pt-root"></div>`;
+    `<div class="pt-hint" id="pt-hint"></div>` +
+    `<div class="pt-toolbar">每張表顯示：
+       <select id="pt-count">
+         <option value="present">只顯示 present</option>
+         <option value="16">前 16 筆</option>
+         <option value="32">前 32 筆</option>
+         <option value="64">前 64 筆</option>
+         <option value="128">前 128 筆</option>
+         <option value="256">前 256 筆</option>
+         <option value="512">全部 512 筆</option>
+       </select>
+     </div>` +
+    `<div id="pt-root"></div>`;
+  const sel = document.getElementById("pt-count");
+  try { const s = localStorage.getItem("ptShowMode"); if (s) sel.value = s; } catch (e) {}
+  sel.addEventListener("change", () => {
+    try { localStorage.setItem("ptShowMode", sel.value); } catch (e) {}
+    rerenderLoaded();
+  });
+}
+
+function ptMode() {
+  const sel = document.getElementById("pt-count");
+  return sel ? sel.value : "present";
+}
+
+function rerenderLoaded() {
+  document.querySelectorAll('.pt-children[data-loaded="1"]').forEach((c) => {
+    if (c._entries) renderEntries(c);
+  });
 }
 
 function updatePageTable() {
@@ -430,16 +465,48 @@ async function togglePhys(row, children, phys, level, vaAcc) {
   } catch (e) { children.innerHTML = `<div class="pt-err">讀取失敗：${e}</div>`; return; }
   if (!j.ok) { children.innerHTML = `<div class="pt-err">讀取失敗：${j.error}</div>`; return; }
 
-  children.innerHTML = "";
+  // Cache the raw table so the display-count menu can re-render without re-reading.
+  children._entries = j.values;
+  children._level = level;
+  children._va = vaAcc;
+  children.dataset.loaded = "1";
+  renderEntries(children);
+}
+
+// Render one already-read table according to the display-count menu: either only
+// present entries, or the first N entries (present or not) so the whole page
+// directory's contents can be inspected.
+function renderEntries(children) {
+  const values = children._entries;
+  const level = children._level;
+  const vaAcc = children._va;
   const lvl = PT.levels[level];
   const shift = BigInt(lvl.shift);
   const presentBit = BigInt(PT.presentBit !== undefined ? PT.presentBit : 0);
-  let present = 0;
-  j.values.forEach((raw, i) => {
+  const mode = ptMode();
+  const limit = mode === "present" ? values.length : Math.min(parseInt(mode, 10), values.length);
+
+  children.innerHTML = "";
+  let shown = 0, present = 0;
+  for (let i = 0; i < values.length; i++) {
+    if (mode !== "present" && i >= limit) break;
+    const raw = values[i];
     const v = BigInt(raw);
-    if (!((v >> presentBit) & 1n)) return;   // only show present entries
-    present++;
+    const isPresent = !!((v >> presentBit) & 1n);
+    if (mode === "present" && !isPresent) continue;
     const va = canonical(vaAcc | (BigInt(i) << shift));
+
+    if (!isPresent) {
+      const d = document.createElement("div");
+      d.className = "pt-row pt-np";
+      d.innerHTML =
+        `<span class="pt-tw"> </span><span class="pt-idx">[${i}]</span> ` +
+        `<span class="pt-val">${raw}</span> <span class="pt-fl">not present</span> ` +
+        `<span class="pt-va">VA ${hx(va)}</span>`;
+      children.appendChild(d); shown++;
+      continue;
+    }
+    present++; shown++;
     const isLast = !!lvl.leaf || level === PT.levels.length - 1;
     const isLarge = !isLast && PT.largePageBit !== undefined
       && ((v >> BigInt(PT.largePageBit)) & 1n);
@@ -463,9 +530,17 @@ async function togglePhys(row, children, phys, level, vaAcc) {
         `<span class="pt-va">VA ${hx(va)}</span>`;
       children.appendChild(makeNode(rowHtml, nextBase, level + 1, va));
     }
-  });
-  if (!present) children.innerHTML = `<div class="pt-hint">（此表無 present entry）</div>`;
-  children.dataset.loaded = "1";
+  }
+  if (shown === 0) {
+    children.innerHTML = `<div class="pt-hint">（${mode === "present" ? "此表無 present entry" : "無 entry"}）</div>`;
+  } else {
+    const note = document.createElement("div");
+    note.className = "pt-hint";
+    note.textContent = mode === "present"
+      ? `present ${present} 筆（共 ${values.length}）`
+      : `顯示前 ${limit} / ${values.length} 筆（其中 present ${present} 筆）`;
+    children.appendChild(note);
+  }
 }
 
 buildTables();

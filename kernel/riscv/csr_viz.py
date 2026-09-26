@@ -10,7 +10,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import importlib  # noqa: E402
 import regviz_common  # noqa: E402
+
+importlib.reload(regviz_common)  # pick up edits to the shared module on re-source
 
 regviz_common.install(
     prefix="csrviz",

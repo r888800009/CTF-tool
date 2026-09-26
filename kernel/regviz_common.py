@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
-_VERSION = 1  # bump when this shared implementation changes so re-sourcing hot-reloads
+_VERSION = 2  # bump when this shared implementation changes so re-sourcing hot-reloads
 _HTML_PATH = Path(__file__).resolve().parent / "regviz.html"
 
 
