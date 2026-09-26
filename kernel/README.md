@@ -120,8 +120,9 @@ paging hierarchy live from `CR3`:
 The x86_64 page has a **命名模式（縮寫）** selector that switches every mnemonic
 between Intel's names (e.g. `PG`, `SMEP`, `NX`, `P`, `RW`) and the Linux kernel's
 macro names (`X86_CR0_PG`, `X86_CR4_SMEP`, `EFER_NX`, `_PAGE_PRESENT`,
-`_PAGE_RW`). It applies to both the register bit tables and the page-table flags,
-and the choice is remembered. Other arches can add their own modes by setting
+`_PAGE_RW`). It applies to the register bit tables, the page-table flags, **and
+the page-table level names** — Intel `PML4 → PDPT → PD → PT` vs Linux
+`PGD → PUD → PMD → PTE` — and the choice is remembered. Other arches can add their own modes by setting
 `window.REGVIZ_MODES` and per-flag `alt` names in their `regs.js`.
 
 This needs a **QEMU** target (the reads use the `xp` monitor command) and gdb

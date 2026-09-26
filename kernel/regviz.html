@@ -178,6 +178,11 @@ function nameFor(entry) {
   return (nameMode && entry.alt && entry.alt[nameMode]) ? entry.alt[nameMode] : entry.mn;
 }
 
+// Page-table level name under the current mode (e.g. PML4 vs Linux's PGD).
+function levelName(lvl) {
+  return (nameMode && lvl.alt && lvl.alt[nameMode]) ? lvl.alt[nameMode] : lvl.name;
+}
+
 function buildModeSelector() {
   const box = document.getElementById("mode-sel");
   if (!MODES) { box.style.display = "none"; return; }
@@ -191,7 +196,14 @@ function buildModeSelector() {
   document.getElementById("mode-select").addEventListener("change", (e) => {
     nameMode = e.target.value;
     try { localStorage.setItem("regNameMode", nameMode); } catch (err) {}
-    buildTables(); render(); rerenderLoaded();
+    buildTables(); render();
+    // Refresh page-table level names: the root header in place, the rest via
+    // re-render (which recreates nested nodes with the new level names).
+    if (PT) {
+      const rootLvl = document.querySelector("#pt-root > .pt-node > .pt-row > .pt-lvl");
+      if (rootLvl) rootLvl.textContent = levelName(PT.levels[0]);
+    }
+    rerenderLoaded();
   });
 }
 
@@ -486,12 +498,12 @@ function tableCmds(phys, n) {
 }
 
 // Per-entry command bundle: read the entry, follow it, and the WinDbg VA walk.
-function entryCmds(lvl, phys, i, va, nextBase, leaf, nextName) {
+function entryCmds(lvlName, phys, i, va, nextBase, leaf, nextName) {
   const eaddr = "0x" + (phys + BigInt(i) * 8n).toString(16);
   const nb = "0x" + nextBase.toString(16);
   const vah = "0x" + va.toString(16);
   const L = [];
-  L.push(`# gdb (QEMU): read this ${lvl.name} entry`);
+  L.push(`# gdb (QEMU): read this ${lvlName} entry`);
   L.push(`monitor xp/1gx ${eaddr}`);
   L.push(leaf ? `# gdb: read the mapped frame` : `# gdb: dump next table (${nextName})`);
   L.push(`monitor xp/512gx ${nb}`);
@@ -531,10 +543,10 @@ function updatePageTable() {
   ptLastBase = tableBase;
   hint.innerHTML =
     `${PT.baseReg} = <span class="pt-val">${hx(base)}</span> → ` +
-    `${PT.levels[0].name} @ <span class="pt-val">${hx(tableBase)}</span>。` +
+    `${levelName(PT.levels[0])} @ <span class="pt-val">${hx(tableBase)}</span>。` +
     `點擊節點逐層展開（透過 gdb monitor 讀實體記憶體）。`;
   rootEl.innerHTML = "";
-  rootEl.appendChild(makeNode(headHtml(PT.levels[0].name, tableBase), tableBase, 0, 0n));
+  rootEl.appendChild(makeNode(headHtml(levelName(PT.levels[0]), tableBase), tableBase, 0, 0n));
 }
 
 function headHtml(label, phys) {
@@ -633,12 +645,12 @@ function renderEntries(children) {
     const isLarge = !isLast && PT.largePageBit !== undefined
       && ((v >> BigInt(PT.largePageBit)) & 1n);
     const nextBase = v & ptMask();
-    const next = isLast ? null : PT.levels[level + 1].name;
-    const bundle = copySpan(entryCmds(lvl, children._phys, i, va, nextBase, isLast || isLarge, next));
+    const next = isLast ? null : levelName(PT.levels[level + 1]);
+    const bundle = copySpan(entryCmds(levelName(lvl), children._phys, i, va, nextBase, isLast || isLarge, next));
     if (isLast || isLarge) {
       const d = document.createElement("div");
       d.className = "pt-row pt-leaf";
-      const kind = isLarge ? (lvl.name + " large page") : "4K page";
+      const kind = isLarge ? (levelName(lvl) + " large page") : "4K page";
       d.innerHTML =
         `<span class="pt-tw"> </span><span class="pt-idx">[${i}]</span> ` +
         `<span class="pt-val">${raw}</span> <span class="pt-fl">${ptFlags(v)}</span> ` +

@@ -105,11 +105,13 @@ window.REGVIZ_PAGETABLE = {
   largePageBit: 7,                   // bit 7 = PS: a leaf 1 GiB (PDPT) / 2 MiB (PD) page
   canonicalBit: 47,                  // sign-extend VA above bit 47
   entriesPerTable: 512,
+  // Level names follow the naming mode too: Intel PML4/PDPT/PD/PT vs Linux
+  // PGD/PUD/PMD/PTE (P4D is folded away in 4-level paging).
   levels: [
-    { name: "PML4", shift: 39 },
-    { name: "PDPT", shift: 30 },     // PS here -> 1 GiB page
-    { name: "PD",   shift: 21 },     // PS here -> 2 MiB page
-    { name: "PT",   shift: 12, leaf: true },
+    { name: "PML4", shift: 39, alt: { linux: "PGD" } },
+    { name: "PDPT", shift: 30, alt: { linux: "PUD" } },   // PS here -> 1 GiB page
+    { name: "PD",   shift: 21, alt: { linux: "PMD" } },   // PS here -> 2 MiB page
+    { name: "PT",   shift: 12, leaf: true, alt: { linux: "PTE" } },
   ],
   flags: {
     0:  ["P",   "Present", { linux: "_PAGE_PRESENT" }],
