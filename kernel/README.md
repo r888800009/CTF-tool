@@ -114,6 +114,9 @@ paging hierarchy live from `CR3`:
 5. Each table and entry has a small copy control that yields **paste-able gdb and
    WinDbg commands** for that step of the walk — e.g. `monitor xp/512gx <phys>`
    for gdb (QEMU), and `!dq <phys> L200` / `!pte <va>` for WinDbg.
+6. Hovering any entry row shows a tooltip that **decodes every bit** of that
+   entry — each flag's name, its live 0/1 value, and its description — plus the
+   raw entry value and virtual address.
 
 ### Naming mode (Intel / Linux)
 

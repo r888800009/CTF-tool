@@ -133,6 +133,14 @@
   #tip .badge.field { background: var(--field-bg); color: var(--field-fg); border: 1px solid var(--accent); }
   #tip .t-desc { color: var(--muted); }
   #tip .t-reg { margin-top: 6px; font-family: ui-monospace, Consolas, monospace; color: var(--accent); font-size: 11.5px; }
+  #tip .ptt { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+  #tip .ptt-line { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; display: flex; gap: 6px; align-items: baseline; }
+  #tip .ptt-line b { color: var(--text); min-width: 6.5em; display: inline-block; }
+  #tip .ptt-bit { color: var(--muted); min-width: 3.5em; }
+  #tip .ptt-d { color: var(--muted); }
+  #tip .ptt-set b { color: #7ee787; }
+  #tip .ptt-set { color: #7ee787; }
+  #tip .ptt-clear { opacity: .5; }
 </style>
 </head>
 <body>
@@ -336,6 +344,9 @@ function showTip(e, reg, hi, lo, field, flag) {
      <div class="t-state">${stateHtml}</div>
      <div class="t-desc">${desc}</div>
      <div class="t-reg">${reg.name} = ${regHex}</div>`;
+  positionTip(e);
+}
+function positionTip(e) {
   tip.style.opacity = "1";
   const pad = 14;
   let x = e.clientX + pad, y = e.clientY + pad;
@@ -481,6 +492,13 @@ function buildPtSection() {
     t.classList.add("copied");
     setTimeout(() => t.classList.remove("copied"), 1200);
   });
+  // Delegated hover tooltip: decode each bit of the row's entry value.
+  root.addEventListener("mousemove", (e) => {
+    const row = e.target.closest(".pt-row");
+    if (!row || row.dataset.ptv === undefined) { hideTip(); return; }
+    showPtTip(e, row);
+  });
+  root.addEventListener("mouseleave", hideTip);
 }
 
 function copySpan(cmd) {
@@ -511,6 +529,35 @@ function entryCmds(lvlName, phys, i, va, nextBase, leaf, nextName) {
   L.push(`!pte ${vah}`);
   if (!leaf) L.push(`!dq ${nb} L200`);
   return L.join("\n");
+}
+
+// Stamp the per-entry data a hover tooltip needs onto a row element.
+function stampRow(rowEl, raw, level, i, va, kind) {
+  rowEl.dataset.ptv = raw;
+  rowEl.dataset.ptlvl = level;
+  rowEl.dataset.pti = i;
+  rowEl.dataset.ptva = "0x" + va.toString(16);
+  rowEl.dataset.ptkind = kind;
+}
+
+// Tooltip for a page-table row: every defined flag bit with its live 0/1 state
+// (from the entry value) and its description, plus the raw value and VA.
+function showPtTip(e, row) {
+  const v = BigInt(row.dataset.ptv);
+  const level = Number(row.dataset.ptlvl);
+  const lvl = PT.levels[level];
+  const fl = PT.flags || {};
+  const lines = Object.keys(fl).map(Number).sort((a, b) => b - a).map((bit) => {
+    const set = Number((v >> BigInt(bit)) & 1n);
+    return `<div class="ptt-line ${set ? "ptt-set" : "ptt-clear"}">` +
+      `<span class="ptt-bit">bit ${bit}</span> <b>${nameFor(fl[bit])}</b> = ${set}` +
+      `<span class="ptt-d">${fl[bit][1] || ""}</span></div>`;
+  }).join("");
+  tip.innerHTML =
+    `<div class="t-name">${levelName(lvl)} entry [${row.dataset.pti}] · ${row.dataset.ptkind}</div>` +
+    `<div class="t-reg">value = 0x${v.toString(16)} · VA ${row.dataset.ptva}</div>` +
+    `<div class="ptt">${lines}</div>`;
+  positionTip(e);
 }
 
 function ptLimit() {
@@ -637,6 +684,7 @@ function renderEntries(children) {
         `<span class="pt-tw"> </span><span class="pt-idx">[${i}]</span> ` +
         `<span class="pt-val">${raw}</span> <span class="pt-fl">not present</span> ` +
         `<span class="pt-va">VA ${hx(va)}</span>`;
+      stampRow(d, raw, level, i, va, "not present");
       children.appendChild(d); shown++;
       continue;
     }
@@ -656,6 +704,7 @@ function renderEntries(children) {
         `<span class="pt-val">${raw}</span> <span class="pt-fl">${ptFlags(v)}</span> ` +
         `→ frame <span class="pt-val">${hx(nextBase)}</span> ` +
         `<span class="pt-va">VA ${hx(va)} (${kind})</span> ${bundle}`;
+      stampRow(d, raw, level, i, va, kind);
       children.appendChild(d);
     } else {
       const rowHtml =
@@ -663,7 +712,9 @@ function renderEntries(children) {
         `<span class="pt-val">${raw}</span> <span class="pt-fl">${ptFlags(v)}</span> ` +
         `→ <span class="pt-lvl">${next}</span> @ <span class="pt-val">${hx(nextBase)}</span> ` +
         `<span class="pt-va">VA ${hx(va)}</span> ${bundle}`;
-      children.appendChild(makeNode(rowHtml, nextBase, level + 1, va));
+      const node = makeNode(rowHtml, nextBase, level + 1, va);
+      stampRow(node.querySelector(".pt-row"), raw, level, i, va, "→ " + next);
+      children.appendChild(node);
     }
   }
   const note = document.createElement("div");
