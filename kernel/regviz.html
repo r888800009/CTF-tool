@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Register Visualizer</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #171b22;
+    --panel2: #1e232c;
+    --border: #2b323d;
+    --text: #d7dee8;
+    --muted: #8a94a3;
+    --set: #2ea043;
+    --set-bg: #123d1c;
+    --field-bg: #1a2740;
+    --field-fg: #7fb2ff;
+    --clear-bg: #20262f;
+    --reserved: #12151a;
+    --accent: #4b9fff;
+    --warn: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Noto Sans TC", system-ui, sans-serif;
+    line-height: 1.5;
+    padding: 24px 16px 80px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .status {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 14px; font-size: 13px; margin-bottom: 24px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--set); box-shadow: 0 0 8px var(--set); }
+  .dot.stale { background: var(--warn); }
+  .hint { color: var(--muted); }
+  code { background: var(--panel2); padding: 1px 6px; border-radius: 4px; color: var(--accent); }
+
+  .reg {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 18px; margin-bottom: 20px;
+    max-width: 1180px;
+  }
+  .reg-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+  .reg-name { font-size: 17px; font-weight: 700; letter-spacing: .5px; }
+  .reg-val { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 15px; color: var(--accent); }
+  .reg-val.na { color: var(--warn); }
+  .reg-desc { color: var(--muted); font-size: 13px; }
+
+  table.bits { border-collapse: collapse; width: 100%; table-layout: fixed; margin-top: 6px; }
+  table.bits td {
+    border: 1px solid var(--border);
+    text-align: center; padding: 4px 2px; cursor: default;
+    background: var(--clear-bg); transition: background .1s;
+    overflow: hidden;
+  }
+  td.bit .idx { font-size: 10px; color: var(--muted); display: block; }
+  td.bit .mn  { font-size: 11px; font-weight: 600; display: block; min-height: 14px; white-space: nowrap; }
+  td.bit.set   { background: var(--set-bg); }
+  td.bit.set .mn { color: #7ee787; }
+  td.bit.field { background: var(--field-bg); }
+  td.bit.field .mn { color: var(--field-fg); }
+  td.bit.reserved { background: var(--reserved); color: #3a4150; }
+  td.bit.reserved .mn { color: #3a4150; }
+  td.bit:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+  td.bit.na { background: repeating-linear-gradient(45deg,#20262f,#20262f 6px,#171b22 6px,#171b22 12px); }
+
+  .decode { margin-top: 10px; display: flex; gap: 24px; flex-wrap: wrap; font-size: 13px; }
+  .decode .k { color: var(--muted); }
+  .decode .v { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+
+  #tip {
+    position: fixed; z-index: 50; pointer-events: none;
+    background: #0b0e13; border: 1px solid var(--accent);
+    border-radius: 8px; padding: 10px 12px; max-width: 340px;
+    font-size: 12.5px; box-shadow: 0 6px 24px rgba(0,0,0,.6);
+    opacity: 0; transition: opacity .08s;
+  }
+  #tip .t-name { font-weight: 700; color: #fff; margin-bottom: 3px; }
+  #tip .t-state { margin: 6px 0; }
+  #tip .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-weight: 600; font-size: 11px; }
+  #tip .badge.set { background: var(--set-bg); color: #7ee787; border: 1px solid var(--set); }
+  #tip .badge.clear { background: var(--clear-bg); color: var(--muted); border: 1px solid var(--border); }
+  #tip .badge.field { background: var(--field-bg); color: var(--field-fg); border: 1px solid var(--accent); }
+  #tip .t-desc { color: var(--muted); }
+  #tip .t-reg { margin-top: 6px; font-family: ui-monospace, Consolas, monospace; color: var(--accent); font-size: 11.5px; }
+</style>
+</head>
+<body>
+  <h1 id="title">Register Visualizer</h1>
+  <div class="sub">滑鼠移到任一 bit/field 上檢視解碼後的狀態。</div>
+  <div class="status">
+    <span class="dot" id="dot"></span>
+    <span id="status-text">尚未同步</span>
+    <span class="hint">— 在 gdb 下 <code>sync</code> 更新</span>
+  </div>
+
+  <div id="regs"></div>
+  <div id="tip"></div>
+
+  <!-- Per-arch register schema: sets window.REGS and window.REGVIZ_TITLE. -->
+  <script src="/regs.js"></script>
+  <script>
+// ---- Shared rendering engine ---------------------------------------------
+// A register schema entry (from /regs.js) may contain:
+//   name  : string
+//   desc  : string
+//   width : number of bits to draw as a grid (chunked into rows of 32)
+//   addr  : true to show the value padded to 16 hex digits (address-style)
+//   flags : { bit: [mnemonic, description] }            single-bit flags
+//   fields: [ { hi, lo, mn, desc, map? } ]              multi-bit fields
+//   decode: (BigInt) => [ [label, valueString], ... ]   extra decoded lines
+const REGS = window.REGS || [];
+const CHUNK = 32;
+
+const tip = document.getElementById("tip");
+let current = {};   // name -> BigInt value (or null when unsynced/unreadable)
+
+if (window.REGVIZ_TITLE) {
+  document.getElementById("title").textContent = window.REGVIZ_TITLE;
+  document.title = window.REGVIZ_TITLE;
+}
+
+function fieldAt(reg, bit) {
+  if (!reg.fields) return null;
+  for (const f of reg.fields) if (bit <= f.hi && bit >= f.lo) return f;
+  return null;
+}
+
+function extract(v, hi, lo) {
+  if (v === null || v === undefined) return null;
+  const mask = (1n << BigInt(hi - lo + 1)) - 1n;
+  return (v >> BigInt(lo)) & mask;
+}
+
+function buildTables() {
+  const root = document.getElementById("regs");
+  root.innerHTML = "";
+  for (const reg of REGS) {
+    const box = document.createElement("div");
+    box.className = "reg";
+    box.innerHTML =
+      `<div class="reg-head">
+         <span class="reg-name">${reg.name}</span>
+         <span class="reg-val" id="val-${reg.name}">—</span>
+       </div>
+       <div class="reg-desc">${reg.desc || ""}</div>`;
+
+    if (reg.width) {
+      const table = document.createElement("table");
+      table.className = "bits";
+      // Draw high bits first, chunked into rows of 32 for readability.
+      for (let top = reg.width - 1; top >= 0; top -= CHUNK) {
+        const bottom = Math.max(0, top - CHUNK + 1);
+        const tr = document.createElement("tr");
+        let b = top;
+        while (b >= bottom) {
+          const field = fieldAt(reg, b);
+          if (field && field.hi <= top && field.lo >= bottom) {
+            const td = mkCell(reg, field.hi, field.lo, field, null);
+            td.colSpan = field.hi - field.lo + 1;
+            tr.appendChild(td);
+            b = field.lo - 1;
+          } else {
+            const flag = reg.flags && reg.flags[b];
+            tr.appendChild(mkCell(reg, b, b, field || null, flag || null));
+            b -= 1;
+          }
+        }
+        table.appendChild(tr);
+      }
+      box.appendChild(table);
+    }
+
+    if (reg.decode || (reg.addr && !reg.width)) {
+      const d = document.createElement("div");
+      d.className = "decode";
+      d.id = "dec-" + reg.name;
+      box.appendChild(d);
+    }
+    root.appendChild(box);
+  }
+}
+
+function mkCell(reg, hi, lo, field, flag) {
+  const td = document.createElement("td");
+  const label = flag ? flag[0] : field ? field.mn : "";
+  td.className = "bit" + (flag ? "" : field ? " field" : " reserved");
+  const idx = hi === lo ? "" + hi : hi + ":" + lo;
+  td.innerHTML = `<span class="idx">${idx}</span><span class="mn">${label}</span>`;
+  td.dataset.reg = reg.name;
+  td.dataset.hi = hi;
+  td.dataset.lo = lo;
+  td.addEventListener("mousemove", (e) => showTip(e, reg, hi, lo, field, flag));
+  td.addEventListener("mouseleave", hideTip);
+  return td;
+}
+
+function showTip(e, reg, hi, lo, field, flag) {
+  const v = current[reg.name];
+  const regHex = (v === null || v === undefined) ? "n/a" : ("0x" + v.toString(16));
+  let title, desc, stateHtml;
+  if (flag) {
+    const st = (v === null || v === undefined) ? null : Number((v >> BigInt(lo)) & 1n);
+    title = `${reg.name}.${flag[0]} (bit ${lo})`;
+    desc = flag[1];
+    stateHtml = st === null ? `<span class="badge clear">未同步 / 不可讀</span>`
+      : st ? `<span class="badge set">1 · SET</span>`
+           : `<span class="badge clear">0 · clear</span>`;
+  } else if (field) {
+    const val = extract(v, field.hi, field.lo);
+    title = `${reg.name}.${field.mn} (bits ${field.hi}:${field.lo})`;
+    desc = field.desc || "";
+    if (val === null) {
+      stateHtml = `<span class="badge clear">未同步 / 不可讀</span>`;
+    } else {
+      const mapped = field.map && field.map[val.toString()] !== undefined
+        ? " · " + field.map[val.toString()] : "";
+      stateHtml = `<span class="badge field">0x${val.toString(16)} (${val})${mapped}</span>`;
+    }
+  } else {
+    title = `${reg.name} — bit ${lo} (reserved)`;
+    desc = "Reserved — should read as 0; do not modify.";
+    stateHtml = `<span class="badge clear">reserved</span>`;
+  }
+  tip.innerHTML =
+    `<div class="t-name">${title}</div>
+     <div class="t-state">${stateHtml}</div>
+     <div class="t-desc">${desc}</div>
+     <div class="t-reg">${reg.name} = ${regHex}</div>`;
+  tip.style.opacity = "1";
+  const pad = 14;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  const r = tip.getBoundingClientRect();
+  if (x + r.width > window.innerWidth) x = e.clientX - r.width - pad;
+  if (y + r.height > window.innerHeight) y = e.clientY - r.height - pad;
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+}
+function hideTip() { tip.style.opacity = "0"; }
+
+function render() {
+  for (const reg of REGS) {
+    const v = current[reg.name];
+    const valEl = document.getElementById("val-" + reg.name);
+    if (v === null || v === undefined) {
+      valEl.textContent = "n/a";
+      valEl.className = "reg-val na";
+    } else {
+      const pad = reg.addr ? 16 : Math.ceil((reg.width || 32) / 4);
+      valEl.textContent = "0x" + v.toString(16).padStart(pad, "0");
+      valEl.className = "reg-val";
+    }
+    document.querySelectorAll(`td.bit[data-reg="${reg.name}"]`).forEach((td) => {
+      const hi = Number(td.dataset.hi), lo = Number(td.dataset.lo);
+      const flag = td.classList.contains("reserved") ? null : true;
+      td.classList.remove("na");
+      if (v === null || v === undefined) { td.classList.add("na"); return; }
+      if (td.classList.contains("field")) return;      // fields keep their tint
+      if (td.classList.contains("reserved")) return;
+      const st = Number((v >> BigInt(lo)) & 1n);
+      td.classList.toggle("set", st === 1);
+    });
+    const dec = document.getElementById("dec-" + reg.name);
+    if (dec) {
+      if (v === null || v === undefined) {
+        dec.innerHTML = `<span class="k">未同步</span>`;
+      } else if (reg.decode) {
+        const rows = reg.decode(v) || [];
+        dec.innerHTML = rows.map(
+          ([k, val]) => `<div><span class="k">${k}:</span> <span class="v">${val}</span></div>`
+        ).join("");
+      } else {
+        dec.innerHTML = "";
+      }
+    }
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/data", { cache: "no-store" });
+    const j = await r.json();
+    for (const reg of REGS) {
+      const raw = j.regs[reg.name];
+      current[reg.name] = (raw === null || raw === undefined) ? null : BigInt(raw);
+    }
+    const dot = document.getElementById("dot");
+    const txt = document.getElementById("status-text");
+    if (!j.synced) {
+      dot.className = "dot"; txt.textContent = "尚未同步 — 請在 gdb 下 sync";
+    } else {
+      const age = Date.now() / 1000 - j.synced_at;
+      const when = new Date(j.synced_at * 1000).toLocaleTimeString();
+      if (age > 5) { dot.className = "dot stale"; txt.textContent = `上次同步 ${when}（可能已過時）`; }
+      else { dot.className = "dot live"; txt.textContent = `已同步 ${when}`; }
+    }
+    render();
+  } catch (e) {
+    document.getElementById("dot").className = "dot";
+    document.getElementById("status-text").textContent = "無法連線到 gdb 伺服器";
+  }
+}
+
+buildTables();
+poll();
+setInterval(poll, 1000);
+  </script>
+</body>
+</html>
