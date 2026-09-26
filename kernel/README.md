@@ -103,10 +103,26 @@ paging hierarchy live from `CR3`:
 2. The tree shows the `PML4` root; click a node to expand it one level at a time
    (`PML4 → PDPT → PD → PT`). Each expansion reads the pointed-to table (512
    8-byte entries) over the gdb/QEMU monitor (`monitor xp`).
-3. Only *present* entries are listed; each row shows its index, raw entry value,
-   decoded flags (`P/RW/US/PWT/PCD/A/D/PS/G/NX`), the next-level physical base,
-   and the (canonical) virtual address it covers. A `PS` entry at PDPT/PD is a
+3. Each row shows its index, raw entry value, decoded flags
+   (`P/RW/US/PWT/PCD/A/D/PS/G/NX`), the next-level physical base, and the
+   (canonical) virtual address it covers. A `PS` entry at PDPT/PD is a
    1 GiB / 2 MiB large-page leaf; PT entries are 4 KiB leaves.
+4. The **每張表顯示** menu chooses how many entries of each table to show
+   (16…512), and the **隱藏 not present** checkbox hides non-present entries — on
+   by default, so you normally see only mapped entries; turn it off to inspect
+   the whole page directory including empty slots.
+5. Each table and entry has a small copy control that yields **paste-able gdb and
+   WinDbg commands** for that step of the walk — e.g. `monitor xp/512gx <phys>`
+   for gdb (QEMU), and `!dq <phys> L200` / `!pte <va>` for WinDbg.
+
+### Naming mode (Intel / Linux)
+
+The x86_64 page has a **命名模式（縮寫）** selector that switches every mnemonic
+between Intel's names (e.g. `PG`, `SMEP`, `NX`, `P`, `RW`) and the Linux kernel's
+macro names (`X86_CR0_PG`, `X86_CR4_SMEP`, `EFER_NX`, `_PAGE_PRESENT`,
+`_PAGE_RW`). It applies to both the register bit tables and the page-table flags,
+and the choice is remembered. Other arches can add their own modes by setting
+`window.REGVIZ_MODES` and per-flag `alt` names in their `regs.js`.
 
 This needs a **QEMU** target (the reads use the `xp` monitor command) and gdb
 stopped at the prompt, since the reads are marshalled onto gdb's main thread. The

@@ -100,11 +100,23 @@
   .pt-err { color: var(--warn); font-size: 12.5px; padding: 4px 6px; }
   .pt-loading { color: var(--muted); font-size: 12.5px; padding: 4px 6px; }
   .pt-np { opacity: .42; }
-  .pt-toolbar { font-size: 13px; color: var(--muted); margin-bottom: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .pt-toolbar select {
+  .pt-toolbar { font-size: 13px; color: var(--muted); margin-bottom: 10px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .pt-toolbar label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
+  .pt-toolbar select, .rv-toolbar select {
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 3px 8px; font-size: 13px;
   }
+  .rv-toolbar { font-size: 13px; color: var(--muted); margin: -12px 0 24px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .pt-cmds { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 8px; }
+  .pt-cmd, .pt-copy {
+    font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; cursor: pointer;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 2px 8px; color: var(--muted); user-select: none;
+  }
+  .pt-cmd:hover, .pt-copy:hover { border-color: var(--accent); color: var(--text); }
+  .pt-copy { padding: 0 6px; }
+  .pt-cmd.copied, .pt-copy.copied { border-color: var(--set); color: #7ee787; }
+  .pt-cmd.copied::after, .pt-copy.copied::after { content: " ✓"; }
 
   #tip {
     position: fixed; z-index: 50; pointer-events: none;
@@ -131,6 +143,7 @@
     <span id="status-text">尚未同步</span>
     <span class="hint" id="hint">— 在 gdb 下 <code>sync</code> 更新</span>
   </div>
+  <div id="mode-sel" class="rv-toolbar"></div>
 
   <div id="regs"></div>
   <div id="pt"></div>
@@ -150,6 +163,51 @@
 //   decode: (BigInt) => [ [label, valueString], ... ]   extra decoded lines
 const REGS = window.REGS || [];
 const CHUNK = 32;
+
+// ---- Naming mode (e.g. Intel vs Linux mnemonics) -------------------------
+const MODES = window.REGVIZ_MODES || null;
+let nameMode = MODES ? MODES[0].key : null;
+
+// Resolve the mnemonic to show for a flag ([mn, desc, alt?]) or a field
+// ({mn, alt?}) under the current naming mode, falling back to the base name.
+function nameFor(entry) {
+  if (!entry) return "";
+  if (Array.isArray(entry)) {
+    return (nameMode && entry[2] && entry[2][nameMode]) ? entry[2][nameMode] : entry[0];
+  }
+  return (nameMode && entry.alt && entry.alt[nameMode]) ? entry.alt[nameMode] : entry.mn;
+}
+
+function buildModeSelector() {
+  const box = document.getElementById("mode-sel");
+  if (!MODES) { box.style.display = "none"; return; }
+  try {
+    const s = localStorage.getItem("regNameMode");
+    if (s && MODES.some((m) => m.key === s)) nameMode = s;
+  } catch (e) {}
+  box.innerHTML = `命名模式（縮寫）：<select id="mode-select">` +
+    MODES.map((m) => `<option value="${m.key}"${m.key === nameMode ? " selected" : ""}>${m.label}</option>`).join("") +
+    `</select>`;
+  document.getElementById("mode-select").addEventListener("change", (e) => {
+    nameMode = e.target.value;
+    try { localStorage.setItem("regNameMode", nameMode); } catch (err) {}
+    buildTables(); render(); rerenderLoaded();
+  });
+}
+
+// ---- Clipboard (for the paste-able gdb / WinDbg walk commands) ------------
+function copyText(s) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(s).catch(() => fallbackCopy(s));
+  } else { fallbackCopy(s); }
+}
+function fallbackCopy(s) {
+  const t = document.createElement("textarea");
+  t.value = s; t.style.position = "fixed"; t.style.opacity = "0";
+  document.body.appendChild(t); t.select();
+  try { document.execCommand("copy"); } catch (e) {}
+  t.remove();
+}
 
 const tip = document.getElementById("tip");
 let current = {};   // name -> BigInt value (or null when unsynced/unreadable)
@@ -222,7 +280,7 @@ function buildTables() {
 
 function mkCell(reg, hi, lo, field, flag) {
   const td = document.createElement("td");
-  const label = flag ? flag[0] : field ? field.mn : "";
+  const label = flag ? nameFor(flag) : field ? nameFor(field) : "";
   td.className = "bit" + (flag ? "" : field ? " field" : " reserved");
   const idx = hi === lo ? "" + hi : hi + ":" + lo;
   td.innerHTML = `<span class="idx">${idx}</span><span class="mn">${label}</span>`;
@@ -240,14 +298,14 @@ function showTip(e, reg, hi, lo, field, flag) {
   let title, desc, stateHtml;
   if (flag) {
     const st = (v === null || v === undefined) ? null : Number((v >> BigInt(lo)) & 1n);
-    title = `${reg.name}.${flag[0]} (bit ${lo})`;
+    title = `${reg.name}.${nameFor(flag)} (bit ${lo})`;
     desc = flag[1];
     stateHtml = st === null ? `<span class="badge clear">未同步 / 不可讀</span>`
       : st ? `<span class="badge set">1 · SET</span>`
            : `<span class="badge clear">0 · clear</span>`;
   } else if (field) {
     const val = extract(v, field.hi, field.lo);
-    title = `${reg.name}.${field.mn} (bits ${field.hi}:${field.lo})`;
+    title = `${reg.name}.${nameFor(field)} (bits ${field.hi}:${field.lo})`;
     desc = field.desc || "";
     if (val === null) {
       stateHtml = `<span class="badge clear">未同步 / 不可讀</span>`;
@@ -367,7 +425,7 @@ function ptFlags(v) {
   const fl = PT.flags || {};
   return Object.keys(fl).map(Number).sort((a, b) => a - b)
     .filter((bit) => (v >> BigInt(bit)) & 1n)
-    .map((bit) => `<b>${fl[bit][0]}</b>`).join(" ");
+    .map((bit) => `<b>${nameFor(fl[bit])}</b>`).join(" ");
 }
 
 function buildPtSection() {
@@ -379,27 +437,78 @@ function buildPtSection() {
     `<div class="pt-hint" id="pt-hint"></div>` +
     `<div class="pt-toolbar">每張表顯示：
        <select id="pt-count">
-         <option value="present">只顯示 present</option>
          <option value="16">前 16 筆</option>
          <option value="32">前 32 筆</option>
          <option value="64">前 64 筆</option>
          <option value="128">前 128 筆</option>
          <option value="256">前 256 筆</option>
-         <option value="512">全部 512 筆</option>
+         <option value="512" selected>全部 512 筆</option>
        </select>
+       <label><input type="checkbox" id="pt-hidenp" checked> 隱藏 not present</label>
      </div>` +
     `<div id="pt-root"></div>`;
   const sel = document.getElementById("pt-count");
-  try { const s = localStorage.getItem("ptShowMode"); if (s) sel.value = s; } catch (e) {}
+  const chk = document.getElementById("pt-hidenp");
+  try {
+    const s = localStorage.getItem("ptLimit"); if (s && /^\d+$/.test(s)) sel.value = s;
+    const h = localStorage.getItem("ptHideNP"); if (h !== null) chk.checked = h === "1";
+  } catch (e) {}
   sel.addEventListener("change", () => {
-    try { localStorage.setItem("ptShowMode", sel.value); } catch (e) {}
+    try { localStorage.setItem("ptLimit", sel.value); } catch (e) {}
     rerenderLoaded();
+  });
+  chk.addEventListener("change", () => {
+    try { localStorage.setItem("ptHideNP", chk.checked ? "1" : "0"); } catch (e) {}
+    rerenderLoaded();
+  });
+  // Delegated copy for the paste-able gdb / WinDbg commands on tables and entries.
+  root.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-cmd]");
+    if (!t) return;
+    copyText(decodeURIComponent(t.dataset.cmd));
+    t.classList.add("copied");
+    setTimeout(() => t.classList.remove("copied"), 1200);
   });
 }
 
-function ptMode() {
+function copySpan(cmd) {
+  return `<span class="pt-copy" data-cmd="${encodeURIComponent(cmd)}" ` +
+         `title="複製 gdb / WinDbg 指令">⧉</span>`;
+}
+
+// gdb (QEMU monitor) + WinDbg commands to dump one whole table at `phys`.
+function tableCmds(phys, n) {
+  const p = "0x" + phys.toString(16);
+  return {
+    gdb: `monitor xp/${n}gx ${p}`,
+    windbg: `!dq ${p} L${n.toString(16)}`,
+  };
+}
+
+// Per-entry command bundle: read the entry, follow it, and the WinDbg VA walk.
+function entryCmds(lvl, phys, i, va, nextBase, leaf, nextName) {
+  const eaddr = "0x" + (phys + BigInt(i) * 8n).toString(16);
+  const nb = "0x" + nextBase.toString(16);
+  const vah = "0x" + va.toString(16);
+  const L = [];
+  L.push(`# gdb (QEMU): read this ${lvl.name} entry`);
+  L.push(`monitor xp/1gx ${eaddr}`);
+  L.push(leaf ? `# gdb: read the mapped frame` : `# gdb: dump next table (${nextName})`);
+  L.push(`monitor xp/512gx ${nb}`);
+  L.push(`# WinDbg: walk this virtual address`);
+  L.push(`!pte ${vah}`);
+  if (!leaf) L.push(`!dq ${nb} L200`);
+  return L.join("\n");
+}
+
+function ptLimit() {
   const sel = document.getElementById("pt-count");
-  return sel ? sel.value : "present";
+  const n = sel ? parseInt(sel.value, 10) : 512;
+  return isNaN(n) ? 512 : n;
+}
+function ptHideNP() {
+  const c = document.getElementById("pt-hidenp");
+  return c ? c.checked : true;
 }
 
 function rerenderLoaded() {
@@ -443,7 +552,10 @@ function makeNode(rowHtml, phys, level, vaAcc) {
   children.className = "pt-children";
   children.style.display = "none";
   node.appendChild(row); node.appendChild(children);
-  row.addEventListener("click", () => togglePhys(row, children, phys, level, vaAcc));
+  row.addEventListener("click", (e) => {
+    if (e.target.closest("[data-cmd]")) return;  // let a copy button do only that
+    togglePhys(row, children, phys, level, vaAcc);
+  });
   return node;
 }
 
@@ -469,6 +581,7 @@ async function togglePhys(row, children, phys, level, vaAcc) {
   children._entries = j.values;
   children._level = level;
   children._va = vaAcc;
+  children._phys = phys;
   children.dataset.loaded = "1";
   renderEntries(children);
 }
@@ -483,17 +596,26 @@ function renderEntries(children) {
   const lvl = PT.levels[level];
   const shift = BigInt(lvl.shift);
   const presentBit = BigInt(PT.presentBit !== undefined ? PT.presentBit : 0);
-  const mode = ptMode();
-  const limit = mode === "present" ? values.length : Math.min(parseInt(mode, 10), values.length);
+  const limit = Math.min(ptLimit(), values.length);
+  const hideNP = ptHideNP();
 
   children.innerHTML = "";
+
+  // Paste-able commands to dump this whole table in gdb / WinDbg.
+  const tc = tableCmds(children._phys, values.length);
+  const cmds = document.createElement("div");
+  cmds.className = "pt-cmds";
+  cmds.innerHTML =
+    `<span class="pt-cmd" data-cmd="${encodeURIComponent(tc.gdb)}">gdb: ${tc.gdb}</span>` +
+    `<span class="pt-cmd" data-cmd="${encodeURIComponent(tc.windbg)}">windbg: ${tc.windbg}</span>`;
+  children.appendChild(cmds);
+
   let shown = 0, present = 0;
-  for (let i = 0; i < values.length; i++) {
-    if (mode !== "present" && i >= limit) break;
+  for (let i = 0; i < limit; i++) {
     const raw = values[i];
     const v = BigInt(raw);
     const isPresent = !!((v >> presentBit) & 1n);
-    if (mode === "present" && !isPresent) continue;
+    if (!isPresent && hideNP) continue;
     const va = canonical(vaAcc | (BigInt(i) << shift));
 
     if (!isPresent) {
@@ -511,6 +633,8 @@ function renderEntries(children) {
     const isLarge = !isLast && PT.largePageBit !== undefined
       && ((v >> BigInt(PT.largePageBit)) & 1n);
     const nextBase = v & ptMask();
+    const next = isLast ? null : PT.levels[level + 1].name;
+    const bundle = copySpan(entryCmds(lvl, children._phys, i, va, nextBase, isLast || isLarge, next));
     if (isLast || isLarge) {
       const d = document.createElement("div");
       d.className = "pt-row pt-leaf";
@@ -519,30 +643,26 @@ function renderEntries(children) {
         `<span class="pt-tw"> </span><span class="pt-idx">[${i}]</span> ` +
         `<span class="pt-val">${raw}</span> <span class="pt-fl">${ptFlags(v)}</span> ` +
         `→ frame <span class="pt-val">${hx(nextBase)}</span> ` +
-        `<span class="pt-va">VA ${hx(va)} (${kind})</span>`;
+        `<span class="pt-va">VA ${hx(va)} (${kind})</span> ${bundle}`;
       children.appendChild(d);
     } else {
-      const next = PT.levels[level + 1].name;
       const rowHtml =
         `<span class="pt-tw">▸</span><span class="pt-idx">[${i}]</span> ` +
         `<span class="pt-val">${raw}</span> <span class="pt-fl">${ptFlags(v)}</span> ` +
         `→ <span class="pt-lvl">${next}</span> @ <span class="pt-val">${hx(nextBase)}</span> ` +
-        `<span class="pt-va">VA ${hx(va)}</span>`;
+        `<span class="pt-va">VA ${hx(va)}</span> ${bundle}`;
       children.appendChild(makeNode(rowHtml, nextBase, level + 1, va));
     }
   }
-  if (shown === 0) {
-    children.innerHTML = `<div class="pt-hint">（${mode === "present" ? "此表無 present entry" : "無 entry"}）</div>`;
-  } else {
-    const note = document.createElement("div");
-    note.className = "pt-hint";
-    note.textContent = mode === "present"
-      ? `present ${present} 筆（共 ${values.length}）`
-      : `顯示前 ${limit} / ${values.length} 筆（其中 present ${present} 筆）`;
-    children.appendChild(note);
-  }
+  const note = document.createElement("div");
+  note.className = "pt-hint";
+  note.textContent = shown === 0
+    ? (hideNP ? `前 ${limit} 筆內無 present entry` : "無 entry")
+    : `顯示前 ${limit} / ${values.length} 筆（present ${present}${hideNP ? "，已隱藏 not present" : ""}）`;
+  children.appendChild(note);
 }
 
+buildModeSelector();
 buildTables();
 buildPtSection();
 poll();
