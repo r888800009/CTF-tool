@@ -1,0 +1,10 @@
+{
+  "threshold": 30,
+  "path": ["kernel"],
+  "pattern": "**/*.py",
+  "format": ["python"],
+  "minTokens": 50,
+  "reporters": ["console"],
+  "gitignore": true,
+  "absolute": false
+}

@@ -1,0 +1,10 @@
+{
+  "threshold": 20,
+  "path": ["kernel"],
+  "pattern": "**/*.html",
+  "format": ["markup"],
+  "minTokens": 50,
+  "reporters": ["console"],
+  "gitignore": true,
+  "absolute": false
+}

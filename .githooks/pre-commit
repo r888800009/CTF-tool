@@ -1,0 +1,37 @@
+#!/bin/sh
+# pre-commit hook:用 jscpd 檢查 kernel/ 下的 Python 與 HTML 是否有過多重複程式碼。
+#
+# 掛載方式(committed hook,可被版控分享):
+#     git config core.hooksPath .githooks
+#
+# Python 與 HTML 各自使用獨立門檻(jscpd 單一 config 只支援一個 threshold):
+#     .jscpd.python.json  ->  Python,threshold 30%
+#     .jscpd.html.json    ->  HTML(markup),threshold 20%
+# 需要先安裝 jscpd:  npm install -g jscpd
+
+# 定位 jscpd:優先使用 PATH 中已安裝的,其次退回 npx 自動抓取。
+if command -v jscpd >/dev/null 2>&1; then
+    JSCPD="jscpd"
+elif command -v npx >/dev/null 2>&1; then
+    JSCPD="npx --yes jscpd"
+else
+    echo "pre-commit: 找不到 jscpd,請先執行 'npm install -g jscpd'" >&2
+    exit 1
+fi
+
+status=0
+
+echo "pre-commit: 使用 jscpd 檢查 kernel/ Python 重複程式碼 (門檻 30%)..."
+$JSCPD --config .jscpd.python.json || status=1
+
+echo "pre-commit: 使用 jscpd 檢查 kernel/ HTML 重複程式碼 (門檻 20%)..."
+$JSCPD --config .jscpd.html.json || status=1
+
+if [ "$status" -ne 0 ]; then
+    echo "" >&2
+    echo "pre-commit: kernel/ 的 Python/HTML 重複程式碼超過門檻,commit 已被擋下。" >&2
+    echo "            請將重複邏輯抽取為共用函式/模組後再 commit。" >&2
+    echo "            (門檻設定於 .jscpd.python.json / .jscpd.html.json;如需暫時略過可用 'git commit --no-verify')" >&2
+fi
+
+exit "$status"
