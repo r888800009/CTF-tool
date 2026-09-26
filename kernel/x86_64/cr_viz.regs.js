@@ -85,3 +85,34 @@ window.REGS = [
     decode: (v) => [["TPR (task priority)", String(v & 0xFn)]],
   },
 ];
+
+// 4-level paging tree, walked live from CR3 via the shared page-table engine.
+// Enables the "Page tables" section: click a node to read the pointed-to table
+// (512 8-byte entries) over the gdb/QEMU monitor and expand the next level.
+window.REGVIZ_PAGETABLE = {
+  title: "4-level paging  (CR3 → PML4 → PDPT → PD → PT)",
+  baseReg: "CR3",                    // root table base comes from this register
+  baseMask: "0x000ffffffffff000",    // physical base = bits 12..51 of an entry
+  presentBit: 0,                     // bit 0 = Present
+  largePageBit: 7,                   // bit 7 = PS: a leaf 1 GiB (PDPT) / 2 MiB (PD) page
+  canonicalBit: 47,                  // sign-extend VA above bit 47
+  entriesPerTable: 512,
+  levels: [
+    { name: "PML4", shift: 39 },
+    { name: "PDPT", shift: 30 },     // PS here -> 1 GiB page
+    { name: "PD",   shift: 21 },     // PS here -> 2 MiB page
+    { name: "PT",   shift: 12, leaf: true },
+  ],
+  flags: {
+    0:  ["P",   "Present"],
+    1:  ["RW",  "Writable"],
+    2:  ["US",  "User accessible"],
+    3:  ["PWT", "Page-level write-through"],
+    4:  ["PCD", "Page-level cache disable"],
+    5:  ["A",   "Accessed"],
+    6:  ["D",   "Dirty (leaf entries)"],
+    7:  ["PS",  "Page size (large page leaf)"],
+    8:  ["G",   "Global (leaf entries)"],
+    63: ["NX",  "No-execute"],
+  },
+};

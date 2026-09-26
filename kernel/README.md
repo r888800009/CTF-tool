@@ -94,6 +94,26 @@ When bound to `0.0.0.0` the plugin prints a URL using this machine's LAN IP so a
 remote browser has a reachable address to open. Only bind to `0.0.0.0` on a
 network you trust — anyone who can reach the port can view the register snapshot.
 
+## Page tables (x86_64)
+
+The x86_64 page shows an extra **Page tables** section that walks the 4-level
+paging hierarchy live from `CR3`:
+
+1. Run `crviz sync` so the page has the current `CR3`.
+2. The tree shows the `PML4` root; click a node to expand it one level at a time
+   (`PML4 → PDPT → PD → PT`). Each expansion reads the pointed-to table (512
+   8-byte entries) over the gdb/QEMU monitor (`monitor xp`).
+3. Only *present* entries are listed; each row shows its index, raw entry value,
+   decoded flags (`P/RW/US/PWT/PCD/A/D/PS/G/NX`), the next-level physical base,
+   and the (canonical) virtual address it covers. A `PS` entry at PDPT/PD is a
+   1 GiB / 2 MiB large-page leaf; PT entries are 4 KiB leaves.
+
+This needs a **QEMU** target (the reads use the `xp` monitor command) and gdb
+stopped at the prompt, since the reads are marshalled onto gdb's main thread. The
+page-table walk is driven by an optional `window.REGVIZ_PAGETABLE` config in the
+arch's `regs.js`, so other architectures can add their own walker later without
+touching the shared engine.
+
 ## Notes
 
 - Control / system registers are only exposed by gdb when attached to a **live

@@ -13,11 +13,13 @@ the *last synced* snapshot: nothing is read from the target until the user runs
 
 import http.server
 import json
+import re
 import socket
 import threading
 import time
 import webbrowser
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
@@ -64,6 +66,63 @@ def _parse_host_port(tokens):
         else:
             host = tok
     return host, port
+
+
+def _run_on_main(command, timeout=5.0):
+    """Run a gdb command on gdb's main thread and return its text output.
+
+    The web server runs in a background thread and the gdb Python API is not
+    thread-safe, so on-demand reads (triggered by clicks in the browser) must be
+    marshalled onto gdb's main thread with gdb.post_event, which runs the task
+    when gdb next services its event loop — i.e. while stopped at the prompt. If
+    the inferior is running the task cannot run and the call times out.
+    """
+    box = {}
+    done = threading.Event()
+
+    def task():
+        try:
+            box["output"] = gdb.execute(command, from_tty=False, to_string=True) or ""
+            box["ok"] = True
+        except gdb.error as exc:
+            box["ok"] = False
+            box["error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            box["ok"] = False
+            box["error"] = "%s: %s" % (type(exc).__name__, exc)
+        finally:
+            done.set()
+
+    try:
+        gdb.post_event(task)  # thread-safe; runs on the main thread at the prompt
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": "post_event failed: %s" % exc}
+    if not done.wait(timeout):
+        return {"ok": False,
+                "error": "timeout after %ss — is gdb stopped at the prompt "
+                         "(not running the inferior)?" % timeout}
+    return box
+
+
+def _read_phys_qwords(phys, count):
+    """Read `count` little-endian 8-byte words at physical address `phys`.
+
+    Uses the QEMU monitor (`monitor xp/<n>gx <addr>`), so it needs a QEMU gdb
+    stub. Returns {"ok": True, "values": ["0x..", ...]} or {"ok": False, "error"}.
+    """
+    cmd = "monitor xp/%dgx 0x%x" % (count, phys)
+    res = _run_on_main(cmd)
+    if not res.get("ok"):
+        return res
+    out = res.get("output", "")
+    # Monitor lines look like `0000...1000: 0x.... 0x....`; the address prefix has
+    # no 0x, so grabbing every 0x-token yields exactly the word values in order.
+    vals = re.findall(r"0x([0-9a-fA-F]+)", out)
+    if not vals:
+        return {"ok": False,
+                "error": "no data from `%s` — is this a QEMU target with a "
+                         "monitor? output: %s" % (cmd, out.strip()[:200])}
+    return {"ok": True, "values": ["0x" + v for v in vals[:count]]}
 
 
 def _read_reg(expr):
@@ -139,6 +198,19 @@ def _make_handler():
                 snap = self.server.state.snapshot()
                 snap["prefix"] = self.server.prefix  # so the page can show `<prefix> sync`
                 body = json.dumps(snap).encode()
+                self._send(200, body, "application/json")
+            elif path == "/mem":
+                # On-demand physical-memory read for the page-table tree.
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    phys = int(q.get("phys", ["0"])[0], 16)
+                    count = int(q.get("count", ["512"])[0])
+                except ValueError:
+                    self._send(400, b'{"ok":false,"error":"bad params"}',
+                               "application/json")
+                    return
+                count = max(1, min(count, 512))
+                body = json.dumps(_read_phys_qwords(phys, count)).encode()
                 self._send(200, body, "application/json")
             else:
                 self._send(404, b"not found", "text/plain; charset=utf-8")
