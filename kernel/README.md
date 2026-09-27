@@ -21,15 +21,23 @@ addresses, interrupt masks, and so on.
 
 All four plugins behave the same way and share the same UI.
 
+There is also a **slab viewer** built on the same server:
+
+| Viewer | Folder | Source in gdb | Web command | Default port | Shows |
+| --- | --- | --- | --- | --- | --- |
+| SLUB slab caches | `kernel/slab/` | `source kernel/slab/slab_viz.py` | `slabviz` | 8774 | every `kmem_cache`: sizes, objs/slab, per-node slab/object counts |
+
 ## Layout
 
-The shared logic lives in two files at `kernel/`, so the per-arch plugins stay
-tiny and free of duplicated code (a jscpd pre-commit hook enforces this):
+The shared logic lives at `kernel/`, so each plugin stays tiny and free of
+duplicated code (a jscpd pre-commit hook enforces this):
 
-- `regviz_common.py` — the web server, the `sync`/control commands, the reload
-  logic and the defensive register reading.
-- `regviz.html` — the single web page and its rendering engine (bit tables,
-  hover tooltips, polling).
+- `regviz_common.py` — a generic web-app server (`install_app`): the HTTP server,
+  the `sync`/control commands, host binding and the reload logic. `install(...)`
+  is a thin wrapper over it for the register views.
+- `regviz.html` — the register page and its rendering engine (bit tables, hover
+  tooltips, the page-table tree, polling).
+- `regviz.css` — the shared dark theme, linked by every page.
 
 Each architecture folder holds only:
 
@@ -37,6 +45,10 @@ Each architecture folder holds only:
   `regviz_common.install(...)`.
 - `<name>.regs.js` — the register schema (names, bit flags, multi-bit fields and
   decode hints) that the shared page renders. Served to the browser at `/regs.js`.
+
+The slab viewer is a separate app on the same server: `kernel/slab/slab_viz.py`
+walks `slab_caches` and calls `regviz_common.install_app(...)`, and
+`kernel/slab/slab_viz.html` renders its table.
 
 ## Usage
 
@@ -138,6 +150,26 @@ stopped at the prompt, since the reads are marshalled onto gdb's main thread. Th
 page-table walk is driven by an optional `window.REGVIZ_PAGETABLE` config in the
 arch's `regs.js`, so other architectures can add their own walker later without
 touching the shared engine.
+
+## Slab viewer (Linux, SLUB)
+
+`kernel/slab/slab_viz.py` shows the kernel's slab caches as a sortable, filterable
+table — a richer `/proc/slabinfo` you can browse while stopped in gdb.
+
+```gdb
+(gdb) source kernel/slab/slab_viz.py
+(gdb) slabviz sync      # walk slab_caches now and push the table
+```
+
+Each row is one `kmem_cache`: name, object size, allocated size, free-pointer
+offset, objects per slab, page order, and the per-NUMA-node slab / object /
+partial counts (summed across nodes). Click a column header to sort; type in the
+box to filter by name.
+
+Requirements: a **Linux kernel target with debug info** (a `vmlinux` built with
+DWARF) using the **SLUB** allocator (the kernel default). Every field is read
+defensively via gdb's type introspection, so a differing kernel version shows
+what it can and reports a clear error otherwise (e.g. on a non-kernel target).
 
 ## Notes
 

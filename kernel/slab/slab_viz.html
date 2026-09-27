@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linux Slab Caches</title>
+<link rel="stylesheet" href="/regviz.css">
+<style>
+  /* Slab-table specifics; the shared theme (colors, body, status) is regviz.css. */
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+  .bar input {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 10px; font-size: 13px; min-width: 220px;
+  }
+  .count { color: var(--muted); font-size: 13px; }
+  .err { color: var(--warn); font-size: 13px; margin-bottom: 12px; }
+  table.slab { border-collapse: collapse; width: 100%; max-width: 1180px; font-size: 13px; }
+  table.slab th, table.slab td {
+    border: 1px solid var(--border); padding: 5px 9px; text-align: right; white-space: nowrap;
+  }
+  table.slab th {
+    background: var(--panel); position: sticky; top: 0; cursor: pointer; user-select: none;
+    color: var(--muted); font-weight: 600;
+  }
+  table.slab th:hover { color: var(--text); }
+  table.slab th.sorted { color: var(--accent); }
+  table.slab td.name, table.slab th.name { text-align: left; }
+  table.slab td.name { color: var(--text); font-weight: 600; }
+  table.slab td { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+  table.slab tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+  table.slab tr:hover td { background: var(--panel2); }
+  td.na { color: #3a4150; }
+</style>
+</head>
+<body>
+  <h1>Linux Slab Caches</h1>
+  <div class="sub">SLUB <code>slab_caches</code> — 在 gdb 下 <code id="synccmd">slabviz sync</code> 後更新；點欄位標題可排序。</div>
+  <div class="status">
+    <span class="dot" id="dot"></span>
+    <span id="status-text">尚未同步</span>
+  </div>
+  <div class="err" id="err" style="display:none"></div>
+  <div class="bar">
+    <input id="filter" type="text" placeholder="以名稱過濾（例如 kmalloc、dentry、task）">
+    <span class="count" id="count"></span>
+  </div>
+  <table class="slab"><thead id="thead"></thead><tbody id="tbody"></tbody></table>
+
+<script>
+const COLS = [
+  { k: "name", label: "name", num: false },
+  { k: "object_size", label: "obj size", num: true },
+  { k: "size", label: "size", num: true },
+  { k: "offset", label: "offset", num: true },
+  { k: "objs_per_slab", label: "objs/slab", num: true },
+  { k: "order", label: "order", num: true },
+  { k: "nr_slabs", label: "slabs", num: true },
+  { k: "total_objects", label: "objects", num: true },
+  { k: "nr_partial", label: "partial", num: true },
+  { k: "flags", label: "flags", num: false },
+  { k: "addr", label: "kmem_cache", num: false },
+];
+
+let caches = [];
+let sortCol = "name";
+let sortDir = 1;             // 1 asc, -1 desc
+let filter = "";
+
+try { const f = localStorage.getItem("slabFilter"); if (f) filter = f; } catch (e) {}
+
+function buildHead() {
+  const tr = document.createElement("tr");
+  for (const c of COLS) {
+    const th = document.createElement("th");
+    th.textContent = c.label;
+    if (c.k === "name") th.className = "name";
+    if (c.k === sortCol) th.classList.add("sorted"), (th.textContent += sortDir > 0 ? " ▲" : " ▼");
+    th.addEventListener("click", () => {
+      if (sortCol === c.k) sortDir = -sortDir; else { sortCol = c.k; sortDir = 1; }
+      render();
+    });
+    tr.appendChild(th);
+  }
+  document.getElementById("thead").innerHTML = "";
+  document.getElementById("thead").appendChild(tr);
+}
+
+function cmp(a, b) {
+  const col = COLS.find((c) => c.k === sortCol);
+  let x = a[sortCol], y = b[sortCol];
+  if (col.num) {
+    x = (x === null || x === undefined) ? -Infinity : x;
+    y = (y === null || y === undefined) ? -Infinity : y;
+    return (x - y) * sortDir;
+  }
+  x = (x || "").toString().toLowerCase();
+  y = (y || "").toString().toLowerCase();
+  return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+}
+
+function render() {
+  buildHead();
+  const f = filter.trim().toLowerCase();
+  const rows = caches.filter((c) => !f || (c.name || "").toLowerCase().includes(f)).sort(cmp);
+  const tb = document.getElementById("tbody");
+  tb.innerHTML = "";
+  for (const c of rows) {
+    const tr = document.createElement("tr");
+    for (const col of COLS) {
+      const td = document.createElement("td");
+      const v = c[col.k];
+      if (col.k === "name") td.className = "name";
+      if (v === null || v === undefined) { td.textContent = "—"; td.classList.add("na"); }
+      else td.textContent = v;
+      tr.appendChild(td);
+    }
+    tb.appendChild(tr);
+  }
+  document.getElementById("count").textContent =
+    `${rows.length} / ${caches.length} caches`;
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/data", { cache: "no-store" });
+    const j = await r.json();
+    caches = j.caches || [];
+    document.getElementById("synccmd").textContent = (j.prefix || "slabviz") + " sync";
+    const dot = document.getElementById("dot");
+    const txt = document.getElementById("status-text");
+    const err = document.getElementById("err");
+    if (j.error) { err.style.display = "block"; err.textContent = "讀取錯誤：" + j.error; }
+    else { err.style.display = "none"; }
+    if (!j.synced) {
+      dot.className = "dot"; txt.textContent = `尚未同步 — 請在 gdb 下 ${(j.prefix || "slabviz")} sync`;
+    } else {
+      const when = new Date(j.synced_at * 1000).toLocaleTimeString();
+      const age = Date.now() / 1000 - j.synced_at;
+      dot.className = age > 5 ? "dot stale" : "dot live";
+      txt.textContent = `已同步 ${when}`;
+    }
+    render();
+  } catch (e) {
+    document.getElementById("dot").className = "dot";
+    document.getElementById("status-text").textContent = "無法連線到 gdb 伺服器";
+  }
+}
+
+document.getElementById("filter").value = filter;
+document.getElementById("filter").addEventListener("input", (e) => {
+  filter = e.target.value;
+  try { localStorage.setItem("slabFilter", filter); } catch (err) {}
+  render();
+});
+
+buildHead();
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

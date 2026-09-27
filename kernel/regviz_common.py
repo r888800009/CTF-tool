@@ -23,8 +23,9 @@ from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
-_VERSION = 2  # bump when this shared implementation changes so re-sourcing hot-reloads
+_VERSION = 3  # bump when this shared implementation changes so re-sourcing hot-reloads
 _HTML_PATH = Path(__file__).resolve().parent / "regviz.html"
+_CSS_PATH = Path(__file__).resolve().parent / "regviz.css"  # shared theme for every app
 
 
 def _primary_ip():
@@ -142,31 +143,39 @@ def _read_reg(expr):
 
 
 class _State:
-    """Thread-shared snapshot of the last ``sync``."""
+    """Thread-shared snapshot of the last ``sync``: an arbitrary JSON payload
+    plus a timestamp, read by the page over /data."""
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._regs = {}
+        self._payload = {}
         self._synced_at = None  # epoch seconds of the last successful sync
 
-    def update(self, regs):
+    def set(self, payload):
         with self._lock:
-            self._regs = dict(regs)
+            self._payload = dict(payload)
             self._synced_at = time.time()
 
     def snapshot(self):
         with self._lock:
-            # Values are serialized as hex strings so 64-bit registers survive
-            # the trip to JavaScript without losing precision to its floats.
-            regs = {
-                name: (None if val is None else "0x%x" % val)
-                for name, val in self._regs.items()
-            }
-            return {
-                "synced": self._synced_at is not None,
-                "synced_at": self._synced_at,
-                "regs": regs,
-            }
+            snap = {"synced": self._synced_at is not None, "synced_at": self._synced_at}
+            snap.update(self._payload)
+            return snap
+
+
+_CTYPES = {
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".json": "application/json",
+}
+
+
+def _ctype_for(path):
+    for ext, ct in _CTYPES.items():
+        if path.endswith(ext):
+            return ct
+    return "application/octet-stream"
 
 
 def _make_handler():
@@ -175,6 +184,8 @@ def _make_handler():
             pass
 
         def _send(self, code, body, content_type):
+            if isinstance(body, str):
+                body = body.encode()
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -184,23 +195,23 @@ def _make_handler():
 
         def _send_file(self, path, content_type):
             try:
-                self._send(200, path.read_bytes(), content_type)
+                self._send(200, Path(path).read_bytes(), content_type)
             except OSError as exc:
                 self._send(500, str(exc).encode(), "text/plain; charset=utf-8")
 
         def do_GET(self):
+            app = self.server.app
             path = self.path.split("?", 1)[0]
-            if path in ("/", "/index.html", "/regviz.html"):
-                self._send_file(_HTML_PATH, "text/html; charset=utf-8")
-            elif path == "/regs.js":
-                self._send_file(self.server.regs_path, "application/javascript; charset=utf-8")
+            if path in ("/", "/index.html"):
+                self._send_file(app.html_path, "text/html; charset=utf-8")
+            elif path in app.static:
+                self._send_file(app.static[path], _ctype_for(path))
             elif path == "/data":
-                snap = self.server.state.snapshot()
-                snap["prefix"] = self.server.prefix  # so the page can show `<prefix> sync`
-                body = json.dumps(snap).encode()
-                self._send(200, body, "application/json")
+                snap = app.state.snapshot()
+                snap["prefix"] = app.prefix  # so the page can show `<prefix> sync`
+                self._send(200, json.dumps(snap).encode(), "application/json")
             elif path == "/mem":
-                # On-demand physical-memory read for the page-table tree.
+                # On-demand physical-memory read (used by the page-table tree).
                 q = parse_qs(urlparse(self.path).query)
                 try:
                     phys = int(q.get("phys", ["0"])[0], 16)
@@ -210,8 +221,19 @@ def _make_handler():
                                "application/json")
                     return
                 count = max(1, min(count, 512))
-                body = json.dumps(_read_phys_qwords(phys, count)).encode()
-                self._send(200, body, "application/json")
+                self._send(200, json.dumps(_read_phys_qwords(phys, count)).encode(),
+                           "application/json")
+            elif path in app.routes:
+                # App-specific dynamic endpoint (e.g. the slab viewer's reads).
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    code, body, ctype = app.routes[path](app, q)
+                except Exception as exc:  # noqa: BLE001 - report cleanly as JSON
+                    code = 500
+                    body = json.dumps({"ok": False, "error": "%s: %s"
+                                       % (type(exc).__name__, exc)})
+                    ctype = "application/json"
+                self._send(code, body, ctype)
             else:
                 self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -219,12 +241,16 @@ def _make_handler():
 
 
 class Server:
-    def __init__(self, prefix, default_port, regs_path, exprs, label):
+    def __init__(self, prefix, default_port, label, html_path,
+                 static=None, routes=None, sync_fn=None, sync_hint=None):
         self.prefix = prefix
         self.default_port = default_port
-        self.regs_path = regs_path
-        self.exprs = exprs
         self.label = label
+        self.html_path = html_path          # the "/" page
+        self.static = static or {}          # {url_path: file_path}
+        self.routes = routes or {}          # {url_path: handler(app, query)->(code, body, ctype)}
+        self.sync_fn = sync_fn              # called by `<prefix> sync` (on the main thread)
+        self.sync_hint = sync_hint or "the current data"
         self.state = _State()
         self._httpd = None
         self._thread = None
@@ -256,9 +282,7 @@ class Server:
         except OSError as exc:
             print("[%s] could not bind %s:%d — %s" % (self.prefix, host, port, exc))
             return
-        httpd.state = self.state
-        httpd.regs_path = self.regs_path
-        httpd.prefix = self.prefix
+        httpd.app = self
         self._httpd = httpd
         # Keep the module stash pointing at the running server so a later
         # re-source reuses it (and `stop` can clear it) rather than colliding.
@@ -271,8 +295,8 @@ class Server:
         if host not in ("127.0.0.1", "localhost", "::1"):
             print("[%s] bound to %s — reachable from other machines on the network"
                   % (self.prefix, host))
-        print("[%s] run `%s sync` in gdb to push the current register values"
-              % (self.prefix, self.prefix))
+        print("[%s] run `%s sync` in gdb to push %s"
+              % (self.prefix, self.prefix, self.sync_hint))
         if open_browser:
             try:
                 webbrowser.open(self.url)
@@ -310,23 +334,8 @@ class Server:
             print("[%s] not running" % self.prefix)
 
     def sync(self):
-        regs = {}
-        for name, expr in self.exprs:
-            # expr may be a single string or a list of candidates to try in
-            # order (register names differ between targets, e.g. MIPS CP0 regs).
-            candidates = expr if isinstance(expr, (list, tuple)) else [expr]
-            value = None
-            for cand in candidates:
-                value = _read_reg(cand)
-                if value is not None:
-                    break
-            regs[name] = value
-        self.state.update(regs)
-        parts = ["%s=%s" % (n, "n/a" if v is None else "0x%x" % v) for n, v in regs.items()]
-        print("[%s] synced: %s" % (self.prefix, "  ".join(parts)))
-        if all(v is None for v in regs.values()):
-            print("[%s] no registers were readable — attach to a live target "
-                  "(e.g. a QEMU gdb stub) before syncing" % self.prefix)
+        if self.sync_fn:
+            self.sync_fn(self)
 
 
 class _ControlCommand(gdb.Command):
@@ -370,15 +379,19 @@ class _ControlCommand(gdb.Command):
         self._server.start(port=port, host=host)
 
 
-def install(*, prefix, default_port, directory, regs_js, exprs, label):
-    """Create (or hot-reload) the server for one architecture and register its
-    ``<prefix>`` and ``sync`` gdb commands, then auto-start the web view.
+def install_app(*, prefix, default_port, label, html_path,
+                static=None, routes=None, sync_fn=None, sync_hint=None):
+    """Create (or hot-reload) a web-app server, register its ``<prefix>`` and
+    ``sync`` gdb commands, and auto-start it.
 
-    directory / regs_js locate the arch's ``regs.js`` served at ``/regs.js``.
+    Shared by the register views and the slab viewer so the HTTP server, the
+    commands, host binding and the reload logic live in exactly one place. Apps
+    differ only in their page (``html_path``), static files, dynamic ``routes``
+    and their ``sync_fn`` (run on gdb's main thread by ``<prefix> sync``).
     """
-    regs_path = Path(directory).resolve() / regs_js
+    static = dict(static or {})
+    static.setdefault("/regviz.css", _CSS_PATH)  # every app shares the theme
     attr = "_regviz_%s" % prefix
-
     prev = getattr(gdb, attr, None)
     if prev is not None and getattr(prev, "_version", 0) != _VERSION:
         try:
@@ -388,15 +401,55 @@ def install(*, prefix, default_port, directory, regs_js, exprs, label):
         prev = None
 
     if prev is None:
-        server = Server(prefix, default_port, regs_path, exprs, label)
+        server = Server(prefix, default_port, label, html_path,
+                        static=static, routes=routes, sync_fn=sync_fn, sync_hint=sync_hint)
         setattr(gdb, attr, server)
     else:
-        server = prev
-        server.regs_path = regs_path  # pick up a moved/renamed schema on re-source
-        server.exprs = exprs
+        server = prev  # reuse the running server, but refresh its config on re-source
+        server.html_path = html_path
+        server.static = static or {}
+        server.routes = routes or {}
+        server.sync_fn = sync_fn
+        server.sync_hint = sync_hint or server.sync_hint
 
     _ControlCommand(server)
-
     if not server.running:
         server.start()
+    return server
+
+
+def _register_sync(server):
+    """sync_fn for the register views: read each register (trying alternates) and
+    store the hex values for the page."""
+    regs = {}
+    for name, expr in server.exprs:
+        candidates = expr if isinstance(expr, (list, tuple)) else [expr]
+        value = None
+        for cand in candidates:
+            value = _read_reg(cand)
+            if value is not None:
+                break
+        regs[name] = None if value is None else "0x%x" % value
+    server.state.set({"regs": regs})
+    parts = ["%s=%s" % (n, v if v else "n/a") for n, v in regs.items()]
+    print("[%s] synced: %s" % (server.prefix, "  ".join(parts)))
+    if all(v is None for v in regs.values()):
+        print("[%s] no registers were readable — attach to a live target "
+              "(e.g. a QEMU gdb stub) before syncing" % server.prefix)
+
+
+def install(*, prefix, default_port, directory, regs_js, exprs, label):
+    """Register-view convenience wrapper over :func:`install_app`.
+
+    directory / regs_js locate the arch's ``regs.js`` served at ``/regs.js``.
+    """
+    regs_path = Path(directory).resolve() / regs_js
+    server = install_app(
+        prefix=prefix, default_port=default_port, label=label,
+        html_path=_HTML_PATH,
+        static={"/regs.js": regs_path},
+        sync_fn=_register_sync,
+        sync_hint="the current register values",
+    )
+    server.exprs = exprs  # read by _register_sync
     return server
