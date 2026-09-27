@@ -12,6 +12,7 @@ Targets x86-64 4-level paging. Shared server/command/reload machinery lives in
 kernel/regviz_common.py.
 """
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -144,13 +145,38 @@ def _kvmmap_sync(server, args=None):
         return
     ranges = _walk(cr3)
     if not ranges:
-        server.state.set({"ranges": [], "cr3": "0x%x" % cr3,
+        server._kvmmap_groups = {}
+        server.state.set({"groups": [], "cr3": "0x%x" % cr3,
                           "error": "no mappings read — is this a QEMU target "
                                    "(page tables are read over `monitor xp`)?"})
         print("[kvmmap] no mappings — need a QEMU target with a monitor")
         return
-    server.state.set({"ranges": ranges, "cr3": "0x%x" % cr3})
-    print("[kvmmap] synced %d regions from CR3=0x%x" % (len(ranges), cr3))
+
+    # Group by permission string so the page shows a handful of collapsible
+    # groups instead of one giant table; keep the per-group ranges on the server
+    # and hand them out on demand (/kvmranges) when a group is expanded.
+    groups = {}
+    for r in ranges:
+        groups.setdefault(r["perms"], []).append(r)
+    server._kvmmap_groups = groups
+    summary = sorted(
+        ({"perms": p, "count": len(rs), "total": sum(x["size"] for x in rs)}
+         for p, rs in groups.items()),
+        key=lambda g: -g["total"])
+    server.state.set({"groups": summary, "cr3": "0x%x" % cr3, "nregions": len(ranges)})
+    print("[kvmmap] synced %d regions (%d perm groups) from CR3=0x%x"
+          % (len(ranges), len(groups), cr3))
+
+
+def _route_ranges(app, query):
+    """Ranges of one permission group, on demand (keeps /data small)."""
+    perms = query.get("perms", [""])[0]
+    groups = getattr(app, "_kvmmap_groups", {}) or {}
+    rs = groups.get(perms, [])
+    cap = 5000
+    body = {"ok": True, "perms": perms, "total": len(rs),
+            "ranges": rs[:cap], "truncated": len(rs) > cap}
+    return 200, json.dumps(body), "application/json"
 
 
 regviz_common.install_app(
@@ -158,6 +184,7 @@ regviz_common.install_app(
     default_port=8775,
     label="kernel memory-map",
     html_path=Path(__file__).resolve().parent / "kvmmap_viz.html",
+    routes={"/kvmranges": _route_ranges},
     sync_fn=_kvmmap_sync,
     sync_hint="the kernel memory map (walks CR3)",
 )

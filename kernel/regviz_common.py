@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
-_VERSION = 5  # bump when this shared implementation changes so re-sourcing hot-reloads
+_VERSION = 6  # bump when this shared implementation changes so re-sourcing hot-reloads
 _HTML_PATH = Path(__file__).resolve().parent / "regviz.html"
 _CSS_PATH = Path(__file__).resolve().parent / "regviz.css"  # shared theme for every app
 
@@ -218,12 +218,15 @@ def _make_handler():
         def _send(self, code, body, content_type):
             if isinstance(body, str):
                 body = body.encode()
-            self.send_response(code)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the browser navigated away / aborted the request — ignore
 
         def _send_file(self, path, content_type):
             try:

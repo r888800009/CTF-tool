@@ -10,125 +10,129 @@
   .bar input { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 13px; min-width: 220px; }
   .count { color: var(--muted); font-size: 13px; }
   .err { color: var(--warn); font-size: 13px; margin-bottom: 12px; }
-  table.vm { border-collapse: collapse; width: 100%; max-width: 1180px; font-size: 13px; }
-  table.vm th, table.vm td { border: 1px solid var(--border); padding: 5px 9px; text-align: right; white-space: nowrap; }
-  table.vm th { background: var(--panel); position: sticky; top: 0; cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; }
-  table.vm th:hover { color: var(--text); }
-  table.vm td { font-family: ui-monospace, Consolas, monospace; }
-  table.vm td.region, table.vm th.region, table.vm td.perms, table.vm th.perms { text-align: left; }
-  table.vm tr:hover td { background: var(--panel2); }
+  .grp { max-width: 1180px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; background: var(--panel); overflow: hidden; }
+  .grp-h { display: flex; gap: 16px; align-items: baseline; padding: 8px 12px; cursor: pointer; user-select: none; font-size: 13px; }
+  .grp-h:hover { background: var(--panel2); }
+  .grp-h .tw { color: var(--muted); width: 1em; }
+  .grp-h .perms { font-family: ui-monospace, Consolas, monospace; font-weight: 700; font-size: 14px; }
+  .grp-h .meta { color: var(--muted); }
   .perms .x { color: #ff7b72; } .perms .w { color: #d29922; } .perms .u { color: #7ee787; }
-  /* region colours */
-  .rg { padding: 1px 8px; border-radius: 10px; font-weight: 600; font-size: 12px; }
-  .rg-user         { color: #7ee787; background: #123d1c; }
-  .rg-kernel.image { }
-  .rg-kernelimage  { color: #ff7b72; background: #3d1214; }
-  .rg-modules      { color: #d29922; background: #3d3112; }
-  .rg-directmap    { color: #79c0ff; background: #10243d; }
-  .rg-vmalloc      { color: #d2a8ff; background: #2a1a3d; }
-  .rg-vmemmap      { color: #8a94a3; background: #20262f; }
-  .rg-vsyscall     { color: #8a94a3; background: #20262f; }
-  .rg-kernel       { color: #d7dee8; background: #20262f; }
+  .grp-body { border-top: 1px solid var(--border); overflow-x: auto; }
+  table.vm { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  table.vm th, table.vm td { border: 1px solid var(--border); padding: 4px 9px; text-align: right; white-space: nowrap; }
+  table.vm th { background: var(--panel2); color: var(--muted); font-weight: 600; }
+  table.vm td { font-family: ui-monospace, Consolas, monospace; }
+  table.vm td.region { text-align: left; }
+  .rg { padding: 1px 8px; border-radius: 10px; font-weight: 600; font-size: 11.5px; }
+  .rg-user { color: #7ee787; background: #123d1c; } .rg-kernelimage { color: #ff7b72; background: #3d1214; }
+  .rg-modules { color: #d29922; background: #3d3112; } .rg-directmap { color: #79c0ff; background: #10243d; }
+  .rg-vmalloc { color: #d2a8ff; background: #2a1a3d; } .rg-vmemmap { color: #8a94a3; background: #20262f; }
+  .rg-vsyscall { color: #8a94a3; background: #20262f; } .rg-kernel { color: #d7dee8; background: #20262f; }
+  .note { color: var(--muted); font-size: 12px; padding: 6px 9px; }
 </style>
 </head>
 <body>
   <h1>Kernel VM Map</h1>
-  <div class="sub">從 CR3 走頁表合併出的核心記憶體映射 — 在 gdb 下 <code id="synccmd">kvmmap sync</code> 更新。點欄位標題排序。</div>
+  <div class="sub">從 CR3 走頁表、依權限分群的核心記憶體映射 — 在 gdb 下 <code id="synccmd">kvmmap sync</code> 更新。點群組展開明細。</div>
   <div class="status"><span class="dot" id="dot"></span><span id="status-text">尚未同步</span></div>
   <div class="count" id="meta" style="margin-bottom:12px"></div>
   <div class="err" id="err" style="display:none"></div>
   <div class="bar">
-    <input id="filter" type="text" placeholder="過濾（region 或 perms，例如 direct、rwx、user）">
+    <input id="filter" type="text" placeholder="以權限過濾（例如 rwx、--x、u）">
     <span class="count" id="count"></span>
   </div>
-  <table class="vm"><thead id="thead"></thead><tbody id="tbody"></tbody></table>
+  <div id="groups"></div>
 
 <script>
-const COLS = [
-  { k: "region", label: "region", num: false },
-  { k: "va", label: "VA start", num: false },
-  { k: "va_end", label: "VA end", num: false },
-  { k: "size", label: "size", num: true },
-  { k: "perms", label: "perms", num: false },
-  { k: "phys", label: "phys", num: false },
-];
-let ranges = [], sortCol = "va", sortDir = 1, filter = "";
+let groups = [];               // summary: [{perms, count, total}]
+const expanded = new Set();    // perms strings currently open
+const detail = {};             // perms -> ranges array (cached)
+let filter = "", lastSynced = 0, lastSig = "";
 try { const f = localStorage.getItem("kvmFilter"); if (f) filter = f; } catch (e) {}
 
 function human(n) {
-  const u = ["B", "K", "M", "G", "T"];
-  let i = 0; let v = n;
+  const u = ["B", "K", "M", "G", "T"]; let i = 0, v = n;
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
   return (i === 0 ? v : v.toFixed(v < 10 ? 1 : 0)) + u[i];
 }
 function rgClass(r) { return "rg rg-" + r.replace(/[^a-z]/g, ""); }
+function permsHtml(p) { return p.split("").map((c) => "wxu".includes(c) ? `<span class="${c}">${c}</span>` : c).join(""); }
 
-function buildHead() {
-  const tr = document.createElement("tr");
-  for (const c of COLS) {
-    const th = document.createElement("th");
-    th.textContent = c.label + (c.k === sortCol ? (sortDir > 0 ? " ▲" : " ▼") : "");
-    if (c.k === "region") th.className = "region";
-    if (c.k === "perms") th.className = "perms";
-    th.addEventListener("click", () => {
-      if (sortCol === c.k) sortDir = -sortDir; else { sortCol = c.k; sortDir = 1; }
-      render(true);
-    });
-    tr.appendChild(th);
-  }
-  const t = document.getElementById("thead"); t.innerHTML = ""; t.appendChild(tr);
-}
-
-function cmp(a, b) {
-  const col = COLS.find((c) => c.k === sortCol);
-  let x = a[sortCol], y = b[sortCol];
-  if (col.num) return (x - y) * sortDir;
-  if (sortCol === "va" || sortCol === "va_end") {
-    const dx = BigInt(x), dy = BigInt(y);
-    return (dx < dy ? -1 : dx > dy ? 1 : 0) * sortDir;
-  }
-  x = (x || "").toString(); y = (y || "").toString();
-  return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
-}
-
-function permsHtml(p) {
-  return p.split("").map((c) => "wxu".includes(c) ? `<span class="${c}">${c}</span>` : c).join("");
-}
-
-let lastSig = "";
 function render(force) {
-  buildHead();
   const f = filter.trim().toLowerCase();
-  const rows = ranges.filter((r) => !f || r.region.toLowerCase().includes(f) || r.perms.includes(f)).sort(cmp);
-  const sig = JSON.stringify(rows) + sortCol + sortDir + f;
+  const gs = groups.filter((g) => !f || g.perms.includes(f));
+  const sig = JSON.stringify(gs) + "|" + [...expanded].join(",");
   if (!force && sig === lastSig) return;
   lastSig = sig;
-  const tb = document.getElementById("tbody"); tb.innerHTML = "";
-  for (const r of rows) {
-    const tr = document.createElement("tr");
-    for (const col of COLS) {
-      const td = document.createElement("td");
-      if (col.k === "region") { td.className = "region"; td.innerHTML = `<span class="${rgClass(r.region)}">${r.region}</span>`; }
-      else if (col.k === "perms") { td.className = "perms"; td.innerHTML = permsHtml(r.perms); }
-      else if (col.k === "size") td.textContent = human(r.size);
-      else td.textContent = r[col.k];
-      tr.appendChild(td);
+
+  const root = document.getElementById("groups");
+  root.innerHTML = "";
+  for (const g of gs) {
+    const box = document.createElement("div");
+    box.className = "grp";
+    const open = expanded.has(g.perms);
+    const h = document.createElement("div");
+    h.className = "grp-h";
+    h.innerHTML =
+      `<span class="tw">${open ? "▾" : "▸"}</span>` +
+      `<span class="perms">${permsHtml(g.perms)}</span>` +
+      `<span class="meta">${g.count} regions · ${human(g.total)}</span>`;
+    h.addEventListener("click", () => {
+      if (expanded.has(g.perms)) expanded.delete(g.perms); else expanded.add(g.perms);
+      render(true);
+    });
+    box.appendChild(h);
+    if (open) {
+      const body = document.createElement("div");
+      body.className = "grp-body";
+      body.innerHTML = `<div class="note">讀取中…</div>`;
+      box.appendChild(body);
+      renderDetail(g.perms, body);
     }
-    tb.appendChild(tr);
+    root.appendChild(box);
   }
-  document.getElementById("count").textContent = `${rows.length} / ${ranges.length} regions`;
+  document.getElementById("count").textContent = `${gs.length} / ${groups.length} groups`;
+}
+
+async function renderDetail(perms, body) {
+  let rs = detail[perms];
+  let truncated = false;
+  if (!rs) {
+    try {
+      const r = await fetch(`/kvmranges?perms=${encodeURIComponent(perms)}`, { cache: "no-store" });
+      const j = await r.json();
+      if (!j.ok) { body.innerHTML = `<div class="note">讀取失敗：${j.error || ""}</div>`; return; }
+      rs = detail[perms] = j.ranges;
+      truncated = j.truncated;
+    } catch (e) { body.innerHTML = `<div class="note">讀取失敗：${e}</div>`; return; }
+  }
+  const rows = rs.map((r) =>
+    `<tr><td class="region"><span class="${rgClass(r.region)}">${r.region}</span></td>` +
+    `<td>${r.va}</td><td>${r.va_end}</td><td>${human(r.size)}</td>` +
+    `<td>${r.phys}</td></tr>`).join("");
+  body.innerHTML =
+    `<table class="vm"><thead><tr><th style="text-align:left">region</th>` +
+    `<th>VA start</th><th>VA end</th><th>size</th><th>phys</th></tr></thead>` +
+    `<tbody>${rows}</tbody></table>` +
+    (truncated ? `<div class="note">（過多，僅顯示前 ${rs.length} 筆）</div>` : "");
 }
 
 async function poll() {
   try {
     const r = await fetch("/data", { cache: "no-store" });
     const j = await r.json();
-    ranges = j.ranges || [];
+    groups = j.groups || [];
     document.getElementById("synccmd").textContent = (j.prefix || "kvmmap") + " sync";
     const dot = document.getElementById("dot"), txt = document.getElementById("status-text"), err = document.getElementById("err");
     if (j.error) { err.style.display = "block"; err.textContent = "讀取錯誤：" + j.error; }
     else { err.style.display = "none"; }
-    document.getElementById("meta").textContent = j.cr3 ? `CR3 = ${j.cr3}（純記憶體：頁表以 monitor xp 讀取）` : "";
+    document.getElementById("meta").textContent =
+      j.cr3 ? `CR3 = ${j.cr3} · ${j.nregions || 0} regions（純記憶體：頁表以 monitor xp 讀取）` : "";
+    if (j.synced_at && j.synced_at !== lastSynced) {
+      lastSynced = j.synced_at;          // new sync → drop cached detail so groups refetch
+      for (const k of Object.keys(detail)) delete detail[k];
+      render(true);
+    }
     if (!j.synced) { dot.className = "dot"; txt.textContent = `尚未同步 — 請在 gdb 下 ${(j.prefix || "kvmmap")} sync`; }
     else {
       const when = new Date(j.synced_at * 1000).toLocaleTimeString();
@@ -149,7 +153,6 @@ document.getElementById("filter").addEventListener("input", (e) => {
   render(true);
 });
 
-buildHead();
 poll();
 setInterval(poll, 1000);
 </script>
