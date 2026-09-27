@@ -214,13 +214,16 @@ permissions into regions.
 (gdb) kvmmap sync
 ```
 
-Regions are **grouped by permission string** (`r/w/x`, `u`ser vs `s`upervisor,
-`g`lobal) into a handful of collapsible groups — click a group to expand its
-ranges (fetched on demand) so a map with thousands of regions stays fast. Each
-range shows its VA start/end, size, physical base and a **region label** — user,
-kernel image, modules, direct map, vmalloc, vmemmap or vsyscall — coloured by area
-(pwntools-style). The 1 s status poll only carries the small group summary, not
-every range.
+Mappings are collapsed **linearly** as the tree is walked: consecutive entries
+that continue the same run are merged — either **contiguous** (VA and physical
+both continue → one solid region) or a **repeat** (the same physical frame
+reappearing at a regular VA stride, e.g. the vmemmap zero page → one `N × page`
+row instead of N identical lines). Each row shows VA start/end, size (or
+`N × page`), permissions (`r/w/x`, `u`ser vs `s`upervisor, `g`lobal) and a
+**region label** — user, kernel image, modules, direct map, vmalloc, vmemmap or
+vsyscall — coloured by area (pwntools-style). Sort by any column; filter by region
+or perms. The 1 s poll carries only a small summary; the collapsed list is fetched
+once per sync.
 
 Like the slab viewer this is **pure memory, no symbols**: `CR3` is a register and
 the page tables are read as physical memory over the QEMU monitor (`monitor xp`).

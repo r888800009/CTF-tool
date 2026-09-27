@@ -111,27 +111,46 @@ def _walk(cr3):
     rec(cr3 & _PHYS, 0, 0)
     leaves.sort(key=lambda m: m[0])
 
-    # Coalesce adjacent leaves with contiguous VA + PA and identical permissions.
-    ranges = []
+    # Linear run-length collapse of consecutive leaves that look the same:
+    #  - "contig": VA and PA both continue → merge into one solid region;
+    #  - "repeat": the same physical frame reappears at a regular VA stride
+    #    (e.g. the vmemmap zero page) → collapse into one "N × page" entry.
+    items = []
+    cur = None
     for va, size, phys, fl in leaves:
-        key = (fl["rw"], fl["us"], fl["nx"], fl["g"])
-        if ranges:
-            pv, pend, pphys, pkey, _ = ranges[-1]
-            if key == pkey and va == pend and phys == (pphys + (pend - pv)):
-                ranges[-1] = (pv, va + size, pphys, pkey, fl)
+        region = _region(va)
+        key = (fl["rw"], fl["us"], fl["nx"], fl["g"], region)
+        if cur is not None and cur["key"] == key and cur["page"] == size:
+            if (va == cur["last_va"] + cur["page"] and phys == cur["last_phys"] + cur["page"]
+                    and cur["kind"] in (None, "contig")):
+                cur.update(kind="contig", count=cur["count"] + 1, last_va=va, last_phys=phys)
                 continue
-        ranges.append((va, va + size, phys, key, fl))
+            if phys == cur["phys0"] and cur["kind"] in (None, "repeat"):
+                stride = va - cur["last_va"]
+                if stride > 0 and (cur["kind"] != "repeat" or stride == cur["stride"]):
+                    cur.update(kind="repeat", stride=stride, count=cur["count"] + 1,
+                               last_va=va, last_phys=phys)
+                    continue
+        cur = {"va0": va, "page": size, "phys0": phys, "key": key, "region": region,
+               "count": 1, "last_va": va, "last_phys": phys, "kind": None, "stride": 0,
+               "perms": _perms(fl)}
+        items.append(cur)
 
     out = []
-    for va, end, phys, _key, fl in ranges:
+    for it in items:
+        repeat = it["kind"] == "repeat"
+        va_end = it["last_va"] + it["page"]
         out.append({
-            "va": "0x%016x" % va,
-            "va_end": "0x%016x" % end,
-            "size": end - va,
-            "phys": "0x%x" % phys,
-            "perms": _perms(fl),
-            "rw": fl["rw"], "us": fl["us"], "nx": fl["nx"], "g": fl["g"],
-            "region": _region(va),
+            "va": "0x%016x" % it["va0"],
+            "va_end": "0x%016x" % va_end,
+            "phys": "0x%x" % it["phys0"],
+            "perms": it["perms"],
+            "region": it["region"],
+            "repeat": repeat,
+            "count": it["count"],
+            "page": it["page"],
+            "stride": it["stride"],
+            "size": it["count"] * it["page"] if repeat else va_end - it["va0"],
         })
     return out
 
@@ -143,40 +162,28 @@ def _kvmmap_sync(server, args=None):
         server.state.set({"ranges": [], "error": "cannot read $cr3: %s" % exc})
         print("[kvmmap] cannot read $cr3 — attach to a live x86-64 target: %s" % exc)
         return
-    ranges = _walk(cr3)
-    if not ranges:
-        server._kvmmap_groups = {}
-        server.state.set({"groups": [], "cr3": "0x%x" % cr3,
+    items = _walk(cr3)
+    if not items:
+        server._kvmmap_items = []
+        server.state.set({"count": 0, "cr3": "0x%x" % cr3,
                           "error": "no mappings read — is this a QEMU target "
                                    "(page tables are read over `monitor xp`)?"})
         print("[kvmmap] no mappings — need a QEMU target with a monitor")
         return
 
-    # Group by permission string so the page shows a handful of collapsible
-    # groups instead of one giant table; keep the per-group ranges on the server
-    # and hand them out on demand (/kvmranges) when a group is expanded.
-    groups = {}
-    for r in ranges:
-        groups.setdefault(r["perms"], []).append(r)
-    server._kvmmap_groups = groups
-    summary = sorted(
-        ({"perms": p, "count": len(rs), "total": sum(x["size"] for x in rs)}
-         for p, rs in groups.items()),
-        key=lambda g: -g["total"])
-    server.state.set({"groups": summary, "cr3": "0x%x" % cr3, "nregions": len(ranges)})
-    print("[kvmmap] synced %d regions (%d perm groups) from CR3=0x%x"
-          % (len(ranges), len(groups), cr3))
+    # Keep the (already run-length-collapsed) list on the server; the 1s poll only
+    # carries a small summary and the page fetches the list once per sync.
+    server._kvmmap_items = items
+    server.state.set({"count": len(items), "cr3": "0x%x" % cr3})
+    print("[kvmmap] synced %d entries from CR3=0x%x" % (len(items), cr3))
 
 
-def _route_ranges(app, query):
-    """Ranges of one permission group, on demand (keeps /data small)."""
-    perms = query.get("perms", [""])[0]
-    groups = getattr(app, "_kvmmap_groups", {}) or {}
-    rs = groups.get(perms, [])
-    cap = 5000
-    body = {"ok": True, "perms": perms, "total": len(rs),
-            "ranges": rs[:cap], "truncated": len(rs) > cap}
-    return 200, json.dumps(body), "application/json"
+def _route_list(app, query):
+    """The full run-length-collapsed map, fetched once per sync (keeps /data small)."""
+    items = getattr(app, "_kvmmap_items", []) or []
+    cap = 20000
+    return 200, json.dumps({"ok": True, "total": len(items), "items": items[:cap],
+                            "truncated": len(items) > cap}), "application/json"
 
 
 regviz_common.install_app(
@@ -184,7 +191,7 @@ regviz_common.install_app(
     default_port=8775,
     label="kernel memory-map",
     html_path=Path(__file__).resolve().parent / "kvmmap_viz.html",
-    routes={"/kvmranges": _route_ranges},
+    routes={"/kvmlist": _route_list},
     sync_fn=_kvmmap_sync,
     sync_hint="the kernel memory map (walks CR3)",
 )
