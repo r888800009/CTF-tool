@@ -37,6 +37,12 @@
   .dctl { margin-left: 12px; }
   .dcount { width: 5em; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
   pre.hex { margin: 4px 0 10px; font-size: 12px; color: var(--text); white-space: pre; overflow-x: auto; font-family: ui-monospace, Consolas, monospace; }
+  /* pwntools-style pointer colouring by address region */
+  .ptr.ktext { color: #ff7b72; }   /* kernel text / rodata (0xffffffff8...) */
+  .ptr.kheap { color: #79c0ff; }   /* kernel heap / direct-map / vmalloc     */
+  .ptr.user  { color: #7ee787; }   /* userspace (canonical low half)         */
+  .leg { font-size: 11.5px; margin: 2px 0 4px; }
+  .leg .ktext { color: #ff7b72; } .leg .kheap { color: #79c0ff; } .leg .user { color: #7ee787; }
 </style>
 </head>
 <body>
@@ -153,7 +159,10 @@ function makeDetail(c) {
   td.innerHTML =
     `<div class="dhead">kmem_cache @ <span class="mono">${c.addr}</span> ` +
     `<span class="dctl">顯示 <input type="number" min="16" max="4096" step="16" value="512" ` +
-    `class="dcount"> bytes</span></div><pre class="hex">讀取中…</pre>`;
+    `class="dcount"> bytes</span></div>` +
+    `<div class="leg"><span class="ktext">■</span> kernel text/rodata　` +
+    `<span class="kheap">■</span> kernel heap/vmap　<span class="user">■</span> userspace</div>` +
+    `<pre class="hex">讀取中…</pre>`;
   tr.appendChild(td);
   const pre = td.querySelector(".hex");
   const inp = td.querySelector(".dcount");
@@ -169,8 +178,18 @@ async function loadHex(addr, count, pre) {
     const r = await fetch(`/slabmem?addr=${addr.replace(/^0x/, "")}&count=${count}`, { cache: "no-store" });
     const j = await r.json();
     if (!j.ok) { pre.textContent = "讀取失敗：" + j.error; return; }
-    pre.textContent = hexdump(BigInt(addr), j.hex);
+    pre.innerHTML = hexdump(BigInt(addr), j.hex);
   } catch (e) { pre.textContent = "讀取失敗：" + e; }
+}
+
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+// Classify a 64-bit little-endian value by address region (pwntools-style).
+function ptrClass(v) {
+  if (v >= 0xffffffff80000000n && v <= 0xffffffffffffffffn) return "ktext";
+  if (v >= 0xffff800000000000n && v < 0xffffffff80000000n) return "kheap";
+  if (v >= 0x1000n && v < 0x0000800000000000n) return "user";
+  return null;
 }
 
 function hexdump(base, hex) {
@@ -178,11 +197,18 @@ function hexdump(base, hex) {
   for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substr(i, 2), 16));
   const lines = [];
   for (let o = 0; o < bytes.length; o += 16) {
-    const chunk = bytes.slice(o, o + 16);
     const addr = (base + BigInt(o)).toString(16).padStart(16, "0");
-    const hexpart = chunk.map((b) => b.toString(16).padStart(2, "0")).join(" ").padEnd(47, " ");
-    const ascii = chunk.map((b) => (b >= 32 && b < 127) ? String.fromCharCode(b) : ".").join("");
-    lines.push(`${addr}  ${hexpart}  ${ascii}`);
+    let hpart = "";
+    for (let g = 0; g < 16; g += 8) {
+      const grp = bytes.slice(o + g, o + g + 8);
+      let hx = grp.map((b) => b.toString(16).padStart(2, "0")).join(" ").padEnd(23, " ");
+      let val = 0n;
+      for (let k = grp.length - 1; k >= 0; k--) val = (val << 8n) | BigInt(grp[k]);
+      const cls = grp.length === 8 ? ptrClass(val) : null;
+      hpart += (cls ? `<span class="ptr ${cls}">${hx}</span>` : hx) + "  ";
+    }
+    const ascii = bytes.slice(o, o + 16).map((b) => (b >= 32 && b < 127) ? String.fromCharCode(b) : ".").join("");
+    lines.push(`${addr}  ${hpart} ${esc(ascii)}`);
   }
   return lines.join("\n");
 }
