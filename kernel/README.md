@@ -177,7 +177,9 @@ System.map if you happen to have them).
 Each row is one `kmem_cache`: name, object size, allocated size, free-pointer
 offset, objects per slab, page order, and the per-NUMA-node slab / object /
 partial counts (summed across nodes). Click a column header to sort; type in the
-box to filter by name.
+box to filter by name. **Click a cache row to expand it** into a hexdump of that
+`kmem_cache` struct (read live from kernel memory; adjust the byte count in the
+detail row) — useful for eyeballing the struct's fields, especially in scan mode.
 
 The list is walked **directly through memory**: only the address of the
 `slab_caches` symbol is needed, and the ring is followed by reading each

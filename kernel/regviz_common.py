@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
-_VERSION = 4  # bump when this shared implementation changes so re-sourcing hot-reloads
+_VERSION = 5  # bump when this shared implementation changes so re-sourcing hot-reloads
 _HTML_PATH = Path(__file__).resolve().parent / "regviz.html"
 _CSS_PATH = Path(__file__).resolve().parent / "regviz.css"  # shared theme for every app
 
@@ -102,6 +102,38 @@ def _run_on_main(command, timeout=5.0):
         return {"ok": False,
                 "error": "timeout after %ss — is gdb stopped at the prompt "
                          "(not running the inferior)?" % timeout}
+    return box
+
+
+def call_on_main(fn, timeout=5.0):
+    """Run an arbitrary callable on gdb's main thread and return
+    {"ok": True, "result": ...} or {"ok": False, "error": ...}.
+
+    App routes (which run on the web-server thread) use this to touch the
+    thread-unsafe gdb API — e.g. reading memory on demand from the browser.
+    """
+    box = {}
+    done = threading.Event()
+
+    def task():
+        try:
+            box["result"] = fn()
+            box["ok"] = True
+        except gdb.error as exc:
+            box["ok"] = False
+            box["error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            box["ok"] = False
+            box["error"] = "%s: %s" % (type(exc).__name__, exc)
+        finally:
+            done.set()
+
+    try:
+        gdb.post_event(task)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": "post_event failed: %s" % exc}
+    if not done.wait(timeout):
+        return {"ok": False, "error": "timeout after %ss — is gdb at the prompt?" % timeout}
     return box
 
 

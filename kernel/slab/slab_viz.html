@@ -30,6 +30,13 @@
   table.slab tr:nth-child(even) td { background: rgba(255,255,255,.02); }
   table.slab tr:hover td { background: var(--panel2); }
   td.na { color: #3a4150; }
+  table.slab tr.cache { cursor: pointer; }
+  table.slab tr.detail td { text-align: left; background: var(--bg); }
+  .dhead { color: var(--muted); font-size: 12px; margin: 4px 0; }
+  .dhead .mono { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+  .dctl { margin-left: 12px; }
+  .dcount { width: 5em; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
+  pre.hex { margin: 4px 0 10px; font-size: 12px; color: var(--text); white-space: pre; overflow-x: auto; font-family: ui-monospace, Consolas, monospace; }
 </style>
 </head>
 <body>
@@ -99,26 +106,85 @@ function cmp(a, b) {
   return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
 }
 
-function render() {
+const expanded = new Set();   // cache addresses whose detail row is open
+let lastSig = "";
+
+function render(force) {
   buildHead();
   const f = filter.trim().toLowerCase();
   const rows = caches.filter((c) => !f || (c.name || "").toLowerCase().includes(f)).sort(cmp);
+  // Skip rebuilding (which would collapse open rows) unless something changed.
+  const sig = JSON.stringify(rows) + "|" + sortCol + sortDir + "|" + f;
+  if (!force && sig === lastSig) return;
+  lastSig = sig;
+
   const tb = document.getElementById("tbody");
   tb.innerHTML = "";
   for (const c of rows) {
     const tr = document.createElement("tr");
+    tr.className = "cache";
     for (const col of COLS) {
       const td = document.createElement("td");
       const v = c[col.k];
-      if (col.k === "name") td.className = "name";
-      if (v === null || v === undefined) { td.textContent = "—"; td.classList.add("na"); }
-      else td.textContent = v;
+      if (col.k === "name") {
+        td.className = "name";
+        const tw = expanded.has(c.addr) ? "▾ " : "▸ ";
+        td.textContent = tw + (v == null ? "(anon)" : v);
+      } else if (v === null || v === undefined) {
+        td.textContent = "—"; td.classList.add("na");
+      } else { td.textContent = v; }
       tr.appendChild(td);
     }
+    tr.addEventListener("click", () => {
+      if (expanded.has(c.addr)) expanded.delete(c.addr); else expanded.add(c.addr);
+      render(true);
+    });
     tb.appendChild(tr);
+    if (expanded.has(c.addr)) tb.appendChild(makeDetail(c));
   }
-  document.getElementById("count").textContent =
-    `${rows.length} / ${caches.length} caches`;
+  document.getElementById("count").textContent = `${rows.length} / ${caches.length} caches`;
+}
+
+function makeDetail(c) {
+  const tr = document.createElement("tr");
+  tr.className = "detail";
+  const td = document.createElement("td");
+  td.colSpan = COLS.length;
+  td.innerHTML =
+    `<div class="dhead">kmem_cache @ <span class="mono">${c.addr}</span> ` +
+    `<span class="dctl">顯示 <input type="number" min="16" max="4096" step="16" value="512" ` +
+    `class="dcount"> bytes</span></div><pre class="hex">讀取中…</pre>`;
+  tr.appendChild(td);
+  const pre = td.querySelector(".hex");
+  const inp = td.querySelector(".dcount");
+  const load = () => loadHex(c.addr, Math.max(16, Math.min(4096, parseInt(inp.value, 10) || 512)), pre);
+  inp.addEventListener("click", (e) => e.stopPropagation());
+  inp.addEventListener("change", (e) => { e.stopPropagation(); load(); });
+  load();
+  return tr;
+}
+
+async function loadHex(addr, count, pre) {
+  try {
+    const r = await fetch(`/slabmem?addr=${addr.replace(/^0x/, "")}&count=${count}`, { cache: "no-store" });
+    const j = await r.json();
+    if (!j.ok) { pre.textContent = "讀取失敗：" + j.error; return; }
+    pre.textContent = hexdump(BigInt(addr), j.hex);
+  } catch (e) { pre.textContent = "讀取失敗：" + e; }
+}
+
+function hexdump(base, hex) {
+  const bytes = [];
+  for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substr(i, 2), 16));
+  const lines = [];
+  for (let o = 0; o < bytes.length; o += 16) {
+    const chunk = bytes.slice(o, o + 16);
+    const addr = (base + BigInt(o)).toString(16).padStart(16, "0");
+    const hexpart = chunk.map((b) => b.toString(16).padStart(2, "0")).join(" ").padEnd(47, " ");
+    const ascii = chunk.map((b) => (b >= 32 && b < 127) ? String.fromCharCode(b) : ".").join("");
+    lines.push(`${addr}  ${hexpart}  ${ascii}`);
+  }
+  return lines.join("\n");
 }
 
 async function poll() {
