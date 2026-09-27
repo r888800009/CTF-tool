@@ -39,6 +39,7 @@
     <span class="dot" id="dot"></span>
     <span id="status-text">尚未同步</span>
   </div>
+  <div class="count" id="meta" style="margin-bottom:12px"></div>
   <div class="err" id="err" style="display:none"></div>
   <div class="bar">
     <input id="filter" type="text" placeholder="以名稱過濾（例如 kmalloc、dentry、task）">
@@ -131,6 +132,15 @@ async function poll() {
     const err = document.getElementById("err");
     if (j.error) { err.style.display = "block"; err.textContent = "讀取錯誤：" + j.error; }
     else { err.style.display = "none"; }
+    const meta = j.meta || {};
+    const metaEl = document.getElementById("meta");
+    if (meta.mode === "scan") {
+      metaEl.textContent = `資料來源：記憶體掃描（list_off=${meta.list_off}, name_off=${meta.name_off}；無 debug info，僅名稱與位址）`;
+    } else if (meta.mode === "debuginfo") {
+      metaEl.textContent = "資料來源：debug info（完整欄位）";
+    } else {
+      metaEl.textContent = "";
+    }
     if (!j.synced) {
       dot.className = "dot"; txt.textContent = `尚未同步 — 請在 gdb 下 ${(j.prefix || "slabviz")} sync`;
     } else {

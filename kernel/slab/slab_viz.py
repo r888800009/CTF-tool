@@ -169,57 +169,174 @@ def _kmem_cache_type():
         "info (DWARF) for the running kernel")
 
 
-def _walk_caches():
-    """Every kmem_cache reachable from the global `slab_caches` list.
+_SCAN_MAXOFF = 4096      # bytes of a kmem_cache to scan for a field
+_BRUTE_LIST_MAX = 768    # list-offset search bound when there is no anchor
+_BRUTE_NAME_MAX = 768    # name-offset search bound in the joint brute force
 
-    Traversal is done purely through memory: only the address of the
-    `slab_caches` symbol is needed, and the list ring is followed by reading each
-    `list_head.next` pointer (at offset 0) directly, so it does not depend on the
-    `struct kmem_cache` / `struct list_head` types being resolvable by name. The
-    container type is still needed to *decode* each cache's fields.
+
+def _rd_ptr_safe(addr):
+    try:
+        return _rd_ptr(addr)
+    except gdb.error:
+        return 0
+
+
+def _read_cstr(addr, maxlen=48):
+    if not addr:
+        return None
+    try:
+        raw = _read_mem(addr, maxlen)
+    except gdb.error:
+        return None
+    z = raw.find(b"\x00")
+    if z >= 0:
+        raw = raw[:z]
+    try:
+        return raw.decode("ascii")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _looks_like_name(s):
+    if not s or not (1 <= len(s) <= 40):
+        return False
+    return all(c.isalnum() or c in "-_.: /" for c in s) and any(c.isalnum() for c in s)
+
+
+def _enumerate_nodes(head):
+    """Ring of list_head node addresses reachable from `head`, via raw memory."""
+    nodes, seen = [], set()
+    node = _rd_ptr_safe(head)
+    while node and node != head and node not in seen and len(nodes) < 1000000:
+        seen.add(node)
+        nodes.append(node)
+        node = _rd_ptr_safe(node)
+    return nodes
+
+
+def _anchor_base():
+    """A known kmem_cache instance address from a symbol (needs no type info)."""
+    for sym in ("kmem_cache", "kmem_cache_node"):
+        try:
+            inst = _rd_ptr(int(gdb.parse_and_eval("&" + sym)))
+        except gdb.error:
+            continue
+        if inst:
+            return inst
+    return None
+
+
+def _name_off_for(bases, ptr, maxoff=_SCAN_MAXOFF, sample_n=16):
+    """Smallest field offset whose pointer yields a plausible name for most of
+    the sampled caches — i.e. the `name` char* member, found by scanning."""
+    sample = bases[:sample_n]
+    if not sample:
+        return None
+    need = max(3, int(0.8 * len(sample)))
+    for o in range(0, maxoff, ptr):
+        good = sum(1 for b in sample if _looks_like_name(_read_cstr(_rd_ptr_safe(b + o))))
+        if good >= need:
+            return o
+    return None
+
+
+def _scan_caches(nodes):
+    """Discover the kmem_cache layout by scanning memory (no DWARF needed).
+
+    The `list` offset is recovered from a known cache instance (the `kmem_cache`
+    global) that also sits on the ring; the `name` offset is the first pointer
+    field that resolves to a printable cache name across the caches. Yields the
+    name and address of every cache — the fields that scanning can recover
+    reliably.
+    """
+    ptr = _ptr_size()
+    nodeset = set(nodes)
+    list_off = None
+    anchor = _anchor_base()
+    if anchor is not None:
+        for o in range(0, _SCAN_MAXOFF, 8):
+            if (anchor + o) in nodeset:
+                list_off = o
+                break
+    name_off = None
+    if list_off is not None:
+        name_off = _name_off_for([n - list_off for n in nodes], ptr)
+    if list_off is None or name_off is None:
+        # No usable anchor: brute-force (list_off, name_off) together, bounded.
+        for lo in range(0, _BRUTE_LIST_MAX, 8):
+            no = _name_off_for([n - lo for n in nodes], ptr, maxoff=_BRUTE_NAME_MAX, sample_n=8)
+            if no is not None:
+                list_off, name_off = lo, no
+                break
+    if list_off is None or name_off is None:
+        raise gdb.error("memory scan could not locate the kmem_cache layout "
+                        "(need the 'slab_caches' symbol, and ideally 'kmem_cache')")
+
+    caches = []
+    for n in nodes:
+        base = n - list_off
+        caches.append({
+            "name": _read_cstr(_rd_ptr_safe(base + name_off)),
+            "addr": "0x%x" % base,
+            "object_size": None, "size": None, "offset": None,
+            "objs_per_slab": None, "order": None,
+            "nr_slabs": None, "total_objects": None, "nr_partial": None, "flags": None,
+        })
+    caches.sort(key=lambda c: (c.get("name") or "").lower())
+    return caches, {"mode": "scan", "list_off": list_off, "name_off": name_off}
+
+
+def _walk_caches():
+    """Every kmem_cache on the global `slab_caches` list.
+
+    The ring is always traversed directly through memory (only the address of the
+    `slab_caches` symbol is needed). Fields are decoded from DWARF when the
+    `struct kmem_cache` type is available; otherwise the layout is discovered by
+    scanning memory (:func:`_scan_caches`). Returns ``(caches, meta)``.
     """
     try:
         head = int(gdb.parse_and_eval("&slab_caches"))
     except gdb.error:
         raise gdb.error("symbol 'slab_caches' not found — load the kernel symbols")
+    nodes = _enumerate_nodes(head)
 
-    # Follow the ring by reading raw `next` pointers from memory.
-    nodes = []
-    seen = set()
-    node = _rd_ptr(head)
-    while node and node != head and node not in seen and len(nodes) < 1000000:
-        seen.add(node)
-        nodes.append(node)
-        node = _rd_ptr(node)
+    try:
+        kc = _kmem_cache_type()
+    except gdb.error:
+        kc = None
+    if kc is not None:
+        list_off = _field_off(kc, "list")
+        if list_off is not None:
+            kcp = kc.pointer()
+            caches = []
+            for n in nodes:
+                cache = gdb.Value(n - list_off).cast(kcp).dereference()
+                caches.append(_summarize(cache))
+            caches.sort(key=lambda c: (c.get("name") or "").lower())
+            return caches, {"mode": "debuginfo"}
 
-    kc = _kmem_cache_type()
-    kcp = kc.pointer()
-    list_off = _field_off(kc, "list")
-    if list_off is None:
-        raise gdb.error("struct kmem_cache has no 'list' member (unexpected layout)")
-
-    caches = []
-    for n in nodes:
-        cache = gdb.Value(n - list_off).cast(kcp).dereference()
-        caches.append(_summarize(cache))
-    caches.sort(key=lambda c: (c.get("name") or "").lower())
-    return caches
+    return _scan_caches(nodes)
 
 
 def _slab_sync(server):
     try:
-        caches = _walk_caches()
+        caches, meta = _walk_caches()
     except gdb.error as exc:
-        server.state.set({"caches": [], "error": str(exc)})
-        print("[slabviz] could not read slab_caches: %s" % exc)
-        print("[slabviz] need a Linux kernel target with debug info (vmlinux) using SLUB")
+        server.state.set({"caches": [], "meta": {}, "error": str(exc)})
+        print("[slabviz] could not read slab caches: %s" % exc)
+        print("[slabviz] need a Linux kernel target with the 'slab_caches' symbol (SLUB)")
         return
     except Exception as exc:  # noqa: BLE001
-        server.state.set({"caches": [], "error": "%s: %s" % (type(exc).__name__, exc)})
+        server.state.set({"caches": [], "meta": {}, "error": "%s: %s" % (type(exc).__name__, exc)})
         print("[slabviz] error while walking slab_caches: %s" % exc)
         return
-    server.state.set({"caches": caches})
-    print("[slabviz] synced %d slab caches" % len(caches))
+    server.state.set({"caches": caches, "meta": meta})
+    if meta.get("mode") == "scan":
+        print("[slabviz] synced %d slab caches via memory scan "
+              "(list_off=%#x, name_off=%#x; names only, no debug info)"
+              % (len(caches), meta["list_off"], meta["name_off"]))
+    else:
+        print("[slabviz] synced %d slab caches (from debug info)" % len(caches))
 
 
 regviz_common.install_app(
