@@ -134,8 +134,10 @@ async function poll() {
     else { err.style.display = "none"; }
     const meta = j.meta || {};
     const metaEl = document.getElementById("meta");
-    if (meta.mode === "scan") {
-      metaEl.textContent = `資料來源：記憶體掃描（list_off=${meta.list_off}, name_off=${meta.name_off}；無 debug info，僅名稱與位址）`;
+    if (meta.mode === "scan" || meta.mode === "scan-auto") {
+      const how = meta.mode === "scan-auto" ? "全自動記憶體掃描（無符號）" : "記憶體掃描";
+      const anchor = meta.anchor ? `, anchor=${meta.anchor}` : "";
+      metaEl.textContent = `資料來源：${how}（list_off=${meta.list_off}, name_off=${meta.name_off}${anchor}；僅名稱與位址）`;
     } else if (meta.mode === "debuginfo") {
       metaEl.textContent = "資料來源：debug info（完整欄位）";
     } else {

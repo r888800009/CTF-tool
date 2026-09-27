@@ -274,15 +274,26 @@ def _name_off_for(bases, ptr, maxoff=_SCAN_MAXOFF, sample_n=16):
     return None
 
 
-def _scan_caches(nodes):
-    """Discover the kmem_cache layout by scanning memory (no DWARF needed).
+def _decode_scan(nodes, list_off, name_off):
+    """Build cache rows (name + address) from ring nodes and discovered offsets."""
+    caches = []
+    for n in nodes:
+        base = n - list_off
+        caches.append({
+            "name": _read_cstr(_rd_ptr_safe(base + name_off)),
+            "addr": "0x%x" % base,
+            "object_size": None, "size": None, "offset": None,
+            "objs_per_slab": None, "order": None,
+            "nr_slabs": None, "total_objects": None, "nr_partial": None, "flags": None,
+        })
+    caches.sort(key=lambda c: (c.get("name") or "").lower())
+    return caches
 
-    The `list` offset is recovered from a known cache instance (the `kmem_cache`
-    global) that also sits on the ring; the `name` offset is the first pointer
-    field that resolves to a printable cache name across the caches. Yields the
-    name and address of every cache — the fields that scanning can recover
-    reliably.
-    """
+
+def _scan_caches(nodes):
+    """Discover the layout when the ring head is known: list-offset from the
+    `kmem_cache` anchor or a bounded brute force, name-offset from the printable-
+    name heuristic."""
     ptr = _ptr_size()
     nodeset = set(nodes)
     list_off = None
@@ -296,72 +307,189 @@ def _scan_caches(nodes):
     if list_off is not None:
         name_off = _name_off_for([n - list_off for n in nodes], ptr)
     if list_off is None or name_off is None:
-        # No usable anchor: brute-force (list_off, name_off) together, bounded.
         for lo in range(0, _BRUTE_LIST_MAX, 8):
             no = _name_off_for([n - lo for n in nodes], ptr, maxoff=_BRUTE_NAME_MAX, sample_n=8)
             if no is not None:
                 list_off, name_off = lo, no
                 break
     if list_off is None or name_off is None:
-        raise gdb.error("memory scan could not locate the kmem_cache layout "
-                        "(need the 'slab_caches' symbol, and ideally 'kmem_cache')")
+        raise gdb.error("memory scan could not locate the kmem_cache layout")
+    return _decode_scan(nodes, list_off, name_off), {
+        "mode": "scan", "list_off": list_off, "name_off": name_off}
 
-    caches = []
-    for n in nodes:
-        base = n - list_off
-        caches.append({
-            "name": _read_cstr(_rd_ptr_safe(base + name_off)),
-            "addr": "0x%x" % base,
-            "object_size": None, "size": None, "offset": None,
-            "objs_per_slab": None, "order": None,
-            "nr_slabs": None, "total_objects": None, "nr_partial": None, "flags": None,
-        })
-    caches.sort(key=lambda c: (c.get("name") or "").lower())
-    return caches, {"mode": "scan", "list_off": list_off, "name_off": name_off}
+
+# ---- Fully automatic discovery: no symbols, no guest cooperation ----------
+_AUTO_RANGE = 96 * 1024 * 1024    # kernel-image bytes to scan from the text anchor
+_AUTO_CHUNK = 1 * 1024 * 1024
+_AUTO_CACHE = None                # remembered {anchor_base, list_off, name_off}
+
+
+def _is_ktext(v):
+    return 0xFFFFFFFF80000000 <= v <= 0xFFFFFFFFFFFFFFFF
+
+
+def _is_kheap(v):
+    # kernel direct map / vmalloc: canonical high half, below the text window
+    return (v >> 48) == 0xFFFF and 0xFFFF800000000000 <= v < 0xFFFFFFFF80000000
+
+
+def _text_anchor():
+    """A kernel .text address to anchor the image scan: $pc if it is in the
+    kernel, else the first kernel-text value found on the stack."""
+    try:
+        pc = int(gdb.parse_and_eval("$pc"))
+        if _is_ktext(pc):
+            return pc
+    except gdb.error:
+        pass
+    try:
+        sp = int(gdb.parse_and_eval("$sp"))
+        blob = _read_mem(sp, 64 * 1024)
+    except gdb.error:
+        return None
+    ps = _ptr_size()
+    for i in range(0, len(blob) - ps, ps):
+        v = int.from_bytes(blob[i:i + ps], "little")
+        if _is_ktext(v):
+            return v
+    return None
+
+
+def _read_image(start, rng, chunk=_AUTO_CHUNK):
+    """Read up to `rng` bytes from `start`, stopping at the first unmapped gap."""
+    buf = bytearray()
+    off = 0
+    while off < rng:
+        n = min(chunk, rng - off)
+        try:
+            buf += _read_mem(start + off, n)
+        except gdb.error:
+            break
+        off += n
+    return bytes(buf)
+
+
+def _auto_discover():
+    """Locate the kmem_cache ring purely from memory, with no symbols.
+
+    Anchor on a kernel .text address, read the kernel image, find the
+    "kmem_cache" name string in rodata, then a .data pointer to a heap instance
+    whose name field points at that string (giving the name offset), and finally
+    the list offset from that instance's ring links. Returns
+    ``{anchor_base, list_off, name_off}`` or None.
+    """
+    anchor = _text_anchor()
+    if anchor is None:
+        return None
+    ps = _ptr_size()
+    image_start = anchor & ~0x1FFFFF
+    buf = _read_image(image_start, _AUTO_RANGE)
+    if not buf:
+        return None
+
+    needle = b"kmem_cache\x00"
+    s_positions = []
+    i = buf.find(needle)
+    while i != -1 and len(s_positions) < 64:
+        s_positions.append(i)
+        i = buf.find(needle, i + 1)
+    if not s_positions:
+        return None
+    s_addrs = set(image_start + p for p in s_positions)
+    data_from = max(s_positions) & ~(ps - 1)  # globals live after the rodata strings
+
+    inst = None
+    name_off = None
+    for pos in range(data_from, len(buf) - ps, ps):
+        v = int.from_bytes(buf[pos:pos + ps], "little")
+        if not _is_kheap(v):
+            continue
+        try:
+            win = _read_mem(v, 256)
+        except gdb.error:
+            continue
+        for o in range(0, len(win) - ps, ps):
+            if int.from_bytes(win[o:o + ps], "little") in s_addrs:
+                inst, name_off = v, o
+                break
+        if inst is not None:
+            break
+    if inst is None:
+        return None
+
+    for o in range(0, _SCAN_MAXOFF, 8):
+        node = _rd_ptr_safe(inst + o)
+        if not _is_kheap(node):
+            continue
+        if _looks_like_name(_read_cstr(_rd_ptr_safe((node - o) + name_off))):
+            return {"anchor_base": inst, "list_off": o, "name_off": name_off}
+    return None
+
+
+def _enumerate_ring(start_node):
+    """All list_head nodes on the ring that `start_node` belongs to."""
+    nodes, seen = [start_node], {start_node}
+    node = _rd_ptr_safe(start_node)
+    while node and node != start_node and node not in seen and len(nodes) < 1000000:
+        seen.add(node)
+        nodes.append(node)
+        node = _rd_ptr_safe(node)
+    return nodes
 
 
 def _walk_caches(head_hint=None):
-    """Every kmem_cache on the global `slab_caches` list.
+    """Every kmem_cache, traversed directly through memory. Returns (caches, meta).
 
-    The ring is always traversed directly through memory. `head_hint` is the
-    address of the `slab_caches` list head; when given, no symbols are needed at
-    all (get it from the guest's /proc/kallsyms or System.map). Otherwise the
-    symbol is resolved. Fields are decoded from DWARF when the `struct kmem_cache`
-    type is available; otherwise the layout is discovered by scanning memory
-    (:func:`_scan_caches`). Returns ``(caches, meta)``.
+    - head_hint given → walk from that slab_caches address (pure memory);
+    - else if a kernel symbol resolves → walk from it;
+    - else discover the ring fully automatically by scanning memory, with no
+      symbols and no guest cooperation (:func:`_auto_discover`).
+    Fields are decoded from DWARF when the struct type is available, otherwise
+    only name and address are recovered by scanning.
     """
-    if head_hint is not None:
-        head = head_hint
-    else:
-        head = None
+    head = head_hint
+    if head is None:
         for hsym in ("slab_caches", "cache_chain"):
             head = _sym_addr(hsym)
             if head is not None:
                 break
-    if head is None:
+
+    if head is not None:
+        nodes = _enumerate_nodes(head)
+        try:
+            kc = _kmem_cache_type()
+        except gdb.error:
+            kc = None
+        if kc is not None:
+            list_off = _field_off(kc, "list")
+            if list_off is not None:
+                kcp = kc.pointer()
+                caches = [_summarize(gdb.Value(n - list_off).cast(kcp).dereference())
+                          for n in nodes]
+                caches.sort(key=lambda c: (c.get("name") or "").lower())
+                return caches, {"mode": "debuginfo"}
+        return _scan_caches(nodes)
+
+    # No symbol and no hint: fully automatic memory discovery (cached).
+    global _AUTO_CACHE
+    disc = _AUTO_CACHE
+    if disc is not None:
+        nm = _read_cstr(_rd_ptr_safe(disc["anchor_base"] + disc["name_off"]))
+        if not _looks_like_name(nm):
+            disc = None
+    if disc is None:
+        disc = _auto_discover()
+        _AUTO_CACHE = disc
+    if disc is None:
         raise gdb.error(
-            "could not resolve 'slab_caches' — no kernel symbols are loaded. "
-            "Pass its address directly (pure memory mode): `slabviz sync 0x<addr>` "
-            "— get it from the guest with `grep ' slab_caches$' /proc/kallsyms` or "
-            "System.map. (Or load a vmlinux so `p &slab_caches` works.)")
-    nodes = _enumerate_nodes(head)
-
-    try:
-        kc = _kmem_cache_type()
-    except gdb.error:
-        kc = None
-    if kc is not None:
-        list_off = _field_off(kc, "list")
-        if list_off is not None:
-            kcp = kc.pointer()
-            caches = []
-            for n in nodes:
-                cache = gdb.Value(n - list_off).cast(kcp).dereference()
-                caches.append(_summarize(cache))
-            caches.sort(key=lambda c: (c.get("name") or "").lower())
-            return caches, {"mode": "debuginfo"}
-
-    return _scan_caches(nodes)
+            "no kernel symbols, and automatic memory discovery failed. Pass the "
+            "slab_caches address if you have it (`slabviz sync 0x<addr>`). Auto "
+            "discovery needs to be stopped in the kernel (a kernel $pc, or a kernel "
+            "return address on the stack) on an x86-64 SLUB target.")
+    nodes = _enumerate_ring(disc["anchor_base"] + disc["list_off"])
+    return _decode_scan(nodes, disc["list_off"], disc["name_off"]), {
+        "mode": "scan-auto", "list_off": disc["list_off"],
+        "name_off": disc["name_off"], "anchor": "0x%x" % disc["anchor_base"]}
 
 
 def _slab_sync(server, args=None):
@@ -386,10 +514,11 @@ def _slab_sync(server, args=None):
         print("[slabviz] error while walking slab_caches: %s" % exc)
         return
     server.state.set({"caches": caches, "meta": meta})
-    if meta.get("mode") == "scan":
-        print("[slabviz] synced %d slab caches via memory scan "
+    if meta.get("mode", "").startswith("scan"):
+        how = "auto memory scan" if meta["mode"] == "scan-auto" else "memory scan"
+        print("[slabviz] synced %d slab caches via %s "
               "(list_off=%#x, name_off=%#x; names only, no debug info)"
-              % (len(caches), meta["list_off"], meta["name_off"]))
+              % (len(caches), how, meta["list_off"], meta["name_off"]))
     else:
         print("[slabviz] synced %d slab caches (from debug info)" % len(caches))
 

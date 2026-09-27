@@ -162,16 +162,17 @@ table — a richer `/proc/slabinfo` you can browse while stopped in gdb.
 (gdb) slabviz sync 0xffffffff82a4c0e0 # pure-memory mode: walk from a given address
 ```
 
-**Pure-memory mode (no symbols, no vmlinux).** If gdb has no kernel symbols
-(`p &slab_caches` fails), pass the `slab_caches` address to `slabviz sync` once —
-everything else is done through raw memory (traversal and layout scanning), and
-the address is remembered for later plain `slabviz sync`. Get the address from the
-guest without any vmlinux:
-
-```
-# inside the guest:
-sudo grep ' slab_caches$' /proc/kallsyms      # or look it up in System.map
-```
+**No symbols, no vmlinux, no guest access.** With no kernel symbols loaded,
+`slabviz sync` discovers everything from memory on the gdb side alone (no root or
+`/proc/kallsyms` in the guest needed): it anchors on a kernel `.text` address (the
+current `$pc`, or a kernel return address found on the stack), reads the kernel
+image to find the `"kmem_cache"` name string, locates a `.data` pointer to a heap
+instance whose name field points at it (giving the `name` offset), and recovers
+the `list` offset from that instance's ring links — then walks the ring. For this
+you just need to be **stopped in the kernel** on an x86-64 SLUB target; the result
+is cached. If auto-discovery can't get started, you can still pass the address
+directly: `slabviz sync 0x<slab_caches>` (from the guest's `/proc/kallsyms` or
+System.map if you happen to have them).
 
 Each row is one `kmem_cache`: name, object size, allocated size, free-pointer
 offset, objects per slab, page order, and the per-NUMA-node slab / object /
