@@ -320,25 +320,30 @@ def _scan_caches(nodes):
     return caches, {"mode": "scan", "list_off": list_off, "name_off": name_off}
 
 
-def _walk_caches():
+def _walk_caches(head_hint=None):
     """Every kmem_cache on the global `slab_caches` list.
 
-    The ring is always traversed directly through memory (only the address of the
-    `slab_caches` symbol is needed). Fields are decoded from DWARF when the
-    `struct kmem_cache` type is available; otherwise the layout is discovered by
-    scanning memory (:func:`_scan_caches`). Returns ``(caches, meta)``.
+    The ring is always traversed directly through memory. `head_hint` is the
+    address of the `slab_caches` list head; when given, no symbols are needed at
+    all (get it from the guest's /proc/kallsyms or System.map). Otherwise the
+    symbol is resolved. Fields are decoded from DWARF when the `struct kmem_cache`
+    type is available; otherwise the layout is discovered by scanning memory
+    (:func:`_scan_caches`). Returns ``(caches, meta)``.
     """
-    head = None
-    for hsym in ("slab_caches", "cache_chain"):
-        head = _sym_addr(hsym)
-        if head is not None:
-            break
+    if head_hint is not None:
+        head = head_hint
+    else:
+        head = None
+        for hsym in ("slab_caches", "cache_chain"):
+            head = _sym_addr(hsym)
+            if head is not None:
+                break
     if head is None:
         raise gdb.error(
             "could not resolve 'slab_caches' — no kernel symbols are loaded. "
-            "Load the matching vmlinux (e.g. `file vmlinux`, or "
-            "`add-symbol-file vmlinux <kaslr_base>`) and check `p &slab_caches` "
-            "works, then run `slabviz sync` again")
+            "Pass its address directly (pure memory mode): `slabviz sync 0x<addr>` "
+            "— get it from the guest with `grep ' slab_caches$' /proc/kallsyms` or "
+            "System.map. (Or load a vmlinux so `p &slab_caches` works.)")
     nodes = _enumerate_nodes(head)
 
     try:
@@ -359,9 +364,18 @@ def _walk_caches():
     return _scan_caches(nodes)
 
 
-def _slab_sync(server):
+def _slab_sync(server, args=None):
+    # `slabviz sync 0x<addr>` sets the slab_caches head directly (pure memory
+    # mode, no symbols needed); the hint persists for later plain syncs.
+    for tok in (args or []):
+        try:
+            server._slab_head = int(tok, 0)
+            print("[slabviz] using slab_caches head at 0x%x (memory mode)" % server._slab_head)
+        except ValueError:
+            print("[slabviz] ignoring invalid address '%s'" % tok)
+    head_hint = getattr(server, "_slab_head", None)
     try:
-        caches, meta = _walk_caches()
+        caches, meta = _walk_caches(head_hint)
     except gdb.error as exc:
         server.state.set({"caches": [], "meta": {}, "error": str(exc)})
         print("[slabviz] could not read slab caches: %s" % exc)

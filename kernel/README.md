@@ -158,7 +158,19 @@ table — a richer `/proc/slabinfo` you can browse while stopped in gdb.
 
 ```gdb
 (gdb) source kernel/slab/slab_viz.py
-(gdb) slabviz sync      # walk slab_caches now and push the table
+(gdb) slabviz sync                    # resolve slab_caches by symbol, then walk
+(gdb) slabviz sync 0xffffffff82a4c0e0 # pure-memory mode: walk from a given address
+```
+
+**Pure-memory mode (no symbols, no vmlinux).** If gdb has no kernel symbols
+(`p &slab_caches` fails), pass the `slab_caches` address to `slabviz sync` once —
+everything else is done through raw memory (traversal and layout scanning), and
+the address is remembered for later plain `slabviz sync`. Get the address from the
+guest without any vmlinux:
+
+```
+# inside the guest:
+sudo grep ' slab_caches$' /proc/kallsyms      # or look it up in System.map
 ```
 
 Each row is one `kmem_cache`: name, object size, allocated size, free-pointer

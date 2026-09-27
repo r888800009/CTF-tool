@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
-_VERSION = 3  # bump when this shared implementation changes so re-sourcing hot-reloads
+_VERSION = 4  # bump when this shared implementation changes so re-sourcing hot-reloads
 _HTML_PATH = Path(__file__).resolve().parent / "regviz.html"
 _CSS_PATH = Path(__file__).resolve().parent / "regviz.css"  # shared theme for every app
 
@@ -333,9 +333,9 @@ class Server:
         else:
             print("[%s] not running" % self.prefix)
 
-    def sync(self):
+    def sync(self, args=None):
         if self.sync_fn:
-            self.sync_fn(self)
+            self.sync_fn(self, args or [])
 
 
 class _ControlCommand(gdb.Command):
@@ -362,7 +362,7 @@ class _ControlCommand(gdb.Command):
             if not self._server.running:
                 print("[%s] web view is not running; starting it now" % self._server.prefix)
                 self._server.start()
-            self._server.sync()
+            self._server.sync(tokens[1:])
             return
         if sub == "stop":
             self._server.stop()
@@ -418,7 +418,7 @@ def install_app(*, prefix, default_port, label, html_path,
     return server
 
 
-def _register_sync(server):
+def _register_sync(server, args=None):
     """sync_fn for the register views: read each register (trying alternates) and
     store the hex values for the page."""
     regs = {}
