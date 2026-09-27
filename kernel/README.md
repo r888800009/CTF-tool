@@ -168,15 +168,24 @@ box to filter by name.
 
 The list is walked **directly through memory**: only the address of the
 `slab_caches` symbol is needed, and the ring is followed by reading each
-`list_head.next` pointer, so traversal does not depend on `struct kmem_cache`
-being resolvable by name. Decoding each cache's fields still needs the struct
-type, which is resolved robustly (by name, or derived from a `struct kmem_cache *`
-global such as `kmem_cache`).
+`list_head.next` pointer, so traversal never depends on `struct kmem_cache`
+being resolvable by name.
 
-Requirements: a **Linux kernel target with debug info** (a `vmlinux` built with
-DWARF) using the **SLUB** allocator (the kernel default). Every field is read
-defensively, so a differing kernel version shows what it can and reports a clear
-error otherwise (e.g. on a non-kernel target).
+Two decode modes, chosen automatically (shown on the page):
+
+- **debug info** — when the `struct kmem_cache` type is available (by name, or
+  derived from a `struct kmem_cache *` global such as `kmem_cache`), every field
+  is decoded.
+- **memory scan** — with no usable type info, the layout is discovered by
+  scanning: the `list` offset is recovered from a known cache instance (the
+  `kmem_cache` global) that also sits on the ring, and the `name` offset is the
+  first pointer field that resolves to a printable cache name across the caches
+  (with a bounded brute-force fallback when no anchor symbol exists). This yields
+  each cache's **name and address** even without DWARF.
+
+Requirements: a Linux **SLUB** target (the kernel default) with at least the
+`slab_caches` symbol. All reads are defensive, so a differing kernel shows what it
+can and reports a clear error otherwise (e.g. on a non-kernel target).
 
 ## Notes
 
