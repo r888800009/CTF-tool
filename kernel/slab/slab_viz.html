@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linux Slab Caches</title>
+<link rel="stylesheet" href="/regviz.css">
+<style>
+  /* Slab-table specifics; the shared theme (colors, body, status) is regviz.css. */
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+  .bar input {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 10px; font-size: 13px; min-width: 220px;
+  }
+  .count { color: var(--muted); font-size: 13px; }
+  .err { color: var(--warn); font-size: 13px; margin-bottom: 12px; }
+  table.slab { border-collapse: collapse; width: 100%; max-width: 1180px; font-size: 13px; }
+  table.slab th, table.slab td {
+    border: 1px solid var(--border); padding: 5px 9px; text-align: right; white-space: nowrap;
+  }
+  table.slab th {
+    background: var(--panel); position: sticky; top: 0; cursor: pointer; user-select: none;
+    color: var(--muted); font-weight: 600;
+  }
+  table.slab th:hover { color: var(--text); }
+  table.slab th.sorted { color: var(--accent); }
+  table.slab td.name, table.slab th.name { text-align: left; }
+  table.slab td.name { color: var(--text); font-weight: 600; }
+  table.slab td { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+  table.slab tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+  table.slab tr:hover td { background: var(--panel2); }
+  td.na { color: #3a4150; }
+  table.slab tr.cache { cursor: pointer; }
+  table.slab tr.detail td { text-align: left; background: var(--bg); }
+  .dhead { color: var(--muted); font-size: 12px; margin: 4px 0; }
+  .dhead .mono { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+  .dctl { margin-left: 12px; }
+  .dcount { width: 5em; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
+  pre.hex { margin: 4px 0 10px; font-size: 12px; color: var(--text); white-space: pre; overflow-x: auto; font-family: ui-monospace, Consolas, monospace; }
+  /* pwntools-style pointer colouring by address region */
+  .ptr.ktext { color: #ff7b72; }   /* kernel text / rodata (0xffffffff8...) */
+  .ptr.kheap { color: #79c0ff; }   /* kernel heap / direct-map / vmalloc     */
+  .ptr.user  { color: #7ee787; }   /* userspace (canonical low half)         */
+  .leg { font-size: 11.5px; margin: 2px 0 4px; }
+  .leg .ktext { color: #ff7b72; } .leg .kheap { color: #79c0ff; } .leg .user { color: #7ee787; }
+</style>
+</head>
+<body>
+  <h1>Linux Slab Caches</h1>
+  <div class="sub">SLUB <code>slab_caches</code> — 在 gdb 下 <code id="synccmd">slabviz sync</code> 後更新；點欄位標題可排序。</div>
+  <div class="status">
+    <span class="dot" id="dot"></span>
+    <span id="status-text">尚未同步</span>
+  </div>
+  <div class="count" id="meta" style="margin-bottom:12px"></div>
+  <div class="err" id="err" style="display:none"></div>
+  <div class="bar">
+    <input id="filter" type="text" placeholder="以名稱過濾（例如 kmalloc、dentry、task）">
+    <span class="count" id="count"></span>
+  </div>
+  <table class="slab"><thead id="thead"></thead><tbody id="tbody"></tbody></table>
+
+<script>
+const COLS = [
+  { k: "name", label: "name", num: false },
+  { k: "object_size", label: "obj size", num: true },
+  { k: "size", label: "size", num: true },
+  { k: "offset", label: "offset", num: true },
+  { k: "objs_per_slab", label: "objs/slab", num: true },
+  { k: "order", label: "order", num: true },
+  { k: "nr_slabs", label: "slabs", num: true },
+  { k: "total_objects", label: "objects", num: true },
+  { k: "nr_partial", label: "partial", num: true },
+  { k: "flags", label: "flags", num: false },
+  { k: "addr", label: "kmem_cache", num: false },
+];
+
+let caches = [];
+let sortCol = "name";
+let sortDir = 1;             // 1 asc, -1 desc
+let filter = "";
+
+try { const f = localStorage.getItem("slabFilter"); if (f) filter = f; } catch (e) {}
+
+function buildHead() {
+  const tr = document.createElement("tr");
+  for (const c of COLS) {
+    const th = document.createElement("th");
+    th.textContent = c.label;
+    if (c.k === "name") th.className = "name";
+    if (c.k === sortCol) th.classList.add("sorted"), (th.textContent += sortDir > 0 ? " ▲" : " ▼");
+    th.addEventListener("click", () => {
+      if (sortCol === c.k) sortDir = -sortDir; else { sortCol = c.k; sortDir = 1; }
+      render();
+    });
+    tr.appendChild(th);
+  }
+  document.getElementById("thead").innerHTML = "";
+  document.getElementById("thead").appendChild(tr);
+}
+
+function cmp(a, b) {
+  const col = COLS.find((c) => c.k === sortCol);
+  let x = a[sortCol], y = b[sortCol];
+  if (col.num) {
+    x = (x === null || x === undefined) ? -Infinity : x;
+    y = (y === null || y === undefined) ? -Infinity : y;
+    return (x - y) * sortDir;
+  }
+  x = (x || "").toString().toLowerCase();
+  y = (y || "").toString().toLowerCase();
+  return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+}
+
+const expanded = new Set();   // cache addresses whose detail row is open
+let lastSig = "";
+
+function render(force) {
+  buildHead();
+  const f = filter.trim().toLowerCase();
+  const rows = caches.filter((c) => !f || (c.name || "").toLowerCase().includes(f)).sort(cmp);
+  // Skip rebuilding (which would collapse open rows) unless something changed.
+  const sig = JSON.stringify(rows) + "|" + sortCol + sortDir + "|" + f;
+  if (!force && sig === lastSig) return;
+  lastSig = sig;
+
+  const tb = document.getElementById("tbody");
+  tb.innerHTML = "";
+  for (const c of rows) {
+    const tr = document.createElement("tr");
+    tr.className = "cache";
+    for (const col of COLS) {
+      const td = document.createElement("td");
+      const v = c[col.k];
+      if (col.k === "name") {
+        td.className = "name";
+        const tw = expanded.has(c.addr) ? "▾ " : "▸ ";
+        td.textContent = tw + (v == null ? "(anon)" : v);
+      } else if (v === null || v === undefined) {
+        td.textContent = "—"; td.classList.add("na");
+      } else { td.textContent = v; }
+      tr.appendChild(td);
+    }
+    tr.addEventListener("click", () => {
+      if (expanded.has(c.addr)) expanded.delete(c.addr); else expanded.add(c.addr);
+      render(true);
+    });
+    tb.appendChild(tr);
+    if (expanded.has(c.addr)) tb.appendChild(makeDetail(c));
+  }
+  document.getElementById("count").textContent = `${rows.length} / ${caches.length} caches`;
+}
+
+function makeDetail(c) {
+  const tr = document.createElement("tr");
+  tr.className = "detail";
+  const td = document.createElement("td");
+  td.colSpan = COLS.length;
+  td.innerHTML =
+    `<div class="dhead">kmem_cache @ <span class="mono">${c.addr}</span> ` +
+    `<span class="dctl">顯示 <input type="number" min="16" max="4096" step="16" value="512" ` +
+    `class="dcount"> bytes</span></div>` +
+    `<div class="leg"><span class="ktext">■</span> kernel text/rodata　` +
+    `<span class="kheap">■</span> kernel heap/vmap　<span class="user">■</span> userspace</div>` +
+    `<pre class="hex">讀取中…</pre>`;
+  tr.appendChild(td);
+  const pre = td.querySelector(".hex");
+  const inp = td.querySelector(".dcount");
+  const load = () => loadHex(c.addr, Math.max(16, Math.min(4096, parseInt(inp.value, 10) || 512)), pre);
+  inp.addEventListener("click", (e) => e.stopPropagation());
+  inp.addEventListener("change", (e) => { e.stopPropagation(); load(); });
+  load();
+  return tr;
+}
+
+async function loadHex(addr, count, pre) {
+  try {
+    const r = await fetch(`/slabmem?addr=${addr.replace(/^0x/, "")}&count=${count}`, { cache: "no-store" });
+    const j = await r.json();
+    if (!j.ok) { pre.textContent = "讀取失敗：" + j.error; return; }
+    pre.innerHTML = hexdump(BigInt(addr), j.hex);
+  } catch (e) { pre.textContent = "讀取失敗：" + e; }
+}
+
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+// Classify a 64-bit little-endian value by address region (pwntools-style).
+function ptrClass(v) {
+  if (v >= 0xffffffff80000000n && v <= 0xffffffffffffffffn) return "ktext";
+  if (v >= 0xffff800000000000n && v < 0xffffffff80000000n) return "kheap";
+  if (v >= 0x1000n && v < 0x0000800000000000n) return "user";
+  return null;
+}
+
+function hexdump(base, hex) {
+  const bytes = [];
+  for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substr(i, 2), 16));
+  const lines = [];
+  for (let o = 0; o < bytes.length; o += 16) {
+    const addr = (base + BigInt(o)).toString(16).padStart(16, "0");
+    let hpart = "";
+    for (let g = 0; g < 16; g += 8) {
+      const grp = bytes.slice(o + g, o + g + 8);
+      let hx = grp.map((b) => b.toString(16).padStart(2, "0")).join(" ").padEnd(23, " ");
+      let val = 0n;
+      for (let k = grp.length - 1; k >= 0; k--) val = (val << 8n) | BigInt(grp[k]);
+      const cls = grp.length === 8 ? ptrClass(val) : null;
+      hpart += (cls ? `<span class="ptr ${cls}">${hx}</span>` : hx) + "  ";
+    }
+    const ascii = bytes.slice(o, o + 16).map((b) => (b >= 32 && b < 127) ? String.fromCharCode(b) : ".").join("");
+    lines.push(`${addr}  ${hpart} ${esc(ascii)}`);
+  }
+  return lines.join("\n");
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/data", { cache: "no-store" });
+    const j = await r.json();
+    caches = j.caches || [];
+    document.getElementById("synccmd").textContent = (j.prefix || "slabviz") + " sync";
+    const dot = document.getElementById("dot");
+    const txt = document.getElementById("status-text");
+    const err = document.getElementById("err");
+    if (j.error) { err.style.display = "block"; err.textContent = "讀取錯誤：" + j.error; }
+    else { err.style.display = "none"; }
+    const meta = j.meta || {};
+    const metaEl = document.getElementById("meta");
+    if (meta.mode === "scan" || meta.mode === "scan-auto") {
+      const how = meta.mode === "scan-auto" ? "全自動記憶體掃描（無符號）" : "記憶體掃描";
+      const anchor = meta.anchor ? `, anchor=${meta.anchor}` : "";
+      metaEl.textContent = `資料來源：${how}（list_off=${meta.list_off}, name_off=${meta.name_off}${anchor}；僅名稱與位址）`;
+    } else if (meta.mode === "debuginfo") {
+      metaEl.textContent = "資料來源：debug info（完整欄位）";
+    } else {
+      metaEl.textContent = "";
+    }
+    if (!j.synced) {
+      dot.className = "dot"; txt.textContent = `尚未同步 — 請在 gdb 下 ${(j.prefix || "slabviz")} sync`;
+    } else {
+      const when = new Date(j.synced_at * 1000).toLocaleTimeString();
+      const age = Date.now() / 1000 - j.synced_at;
+      dot.className = age > 5 ? "dot stale" : "dot live";
+      txt.textContent = `已同步 ${when}`;
+    }
+    render();
+  } catch (e) {
+    document.getElementById("dot").className = "dot";
+    document.getElementById("status-text").textContent = "無法連線到 gdb 伺服器";
+  }
+}
+
+document.getElementById("filter").value = filter;
+document.getElementById("filter").addEventListener("input", (e) => {
+  filter = e.target.value;
+  try { localStorage.setItem("slabFilter", filter); } catch (err) {}
+  render();
+});
+
+buildHead();
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

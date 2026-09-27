@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kernel VM Map</title>
+<link rel="stylesheet" href="/regviz.css">
+<style>
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .bar input { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 13px; min-width: 220px; }
+  .count { color: var(--muted); font-size: 13px; }
+  .err { color: var(--warn); font-size: 13px; margin-bottom: 12px; }
+  table.vm { border-collapse: collapse; width: 100%; max-width: 1180px; font-size: 12.5px; }
+  table.vm th, table.vm td { border: 1px solid var(--border); padding: 4px 9px; text-align: right; white-space: nowrap; }
+  table.vm th { background: var(--panel); position: sticky; top: 0; cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; }
+  table.vm th:hover { color: var(--text); }
+  table.vm td { font-family: ui-monospace, Consolas, monospace; }
+  table.vm td.region, table.vm th.region, table.vm td.perms, table.vm th.perms { text-align: left; }
+  table.vm tr:hover td { background: var(--panel2); }
+  .perms .x { color: #ff7b72; } .perms .w { color: #d29922; } .perms .u { color: #7ee787; }
+  .rep { color: #d2a8ff; }
+  .rg { padding: 1px 8px; border-radius: 10px; font-weight: 600; font-size: 11.5px; }
+  .rg-user { color: #7ee787; background: #123d1c; } .rg-kernelimage { color: #ff7b72; background: #3d1214; }
+  .rg-modules { color: #d29922; background: #3d3112; } .rg-directmap { color: #79c0ff; background: #10243d; }
+  .rg-vmalloc { color: #d2a8ff; background: #2a1a3d; } .rg-vmemmap { color: #8a94a3; background: #20262f; }
+  .rg-vsyscall { color: #8a94a3; background: #20262f; } .rg-kernel { color: #d7dee8; background: #20262f; }
+</style>
+</head>
+<body>
+  <h1>Kernel VM Map</h1>
+  <div class="sub">從 CR3 走頁表、線性收合的核心記憶體映射 — 在 gdb 下 <code id="synccmd">kvmmap sync</code> 更新。點欄位標題排序；連續相同的以 <span class="rep">N × page</span> 收合。</div>
+  <div class="status"><span class="dot" id="dot"></span><span id="status-text">尚未同步</span></div>
+  <div class="count" id="meta" style="margin-bottom:12px"></div>
+  <div class="err" id="err" style="display:none"></div>
+  <div class="bar">
+    <input id="filter" type="text" placeholder="過濾（region 或 perms，例如 direct、--x、u）">
+    <span class="count" id="count"></span>
+  </div>
+  <table class="vm"><thead id="thead"></thead><tbody id="tbody"></tbody></table>
+
+<script>
+const COLS = [
+  { k: "region", label: "region", num: false },
+  { k: "va", label: "VA start", num: false },
+  { k: "va_end", label: "VA end", num: false },
+  { k: "size", label: "size", num: true },
+  { k: "perms", label: "perms", num: false },
+  { k: "phys", label: "phys", num: false },
+];
+let items = [], sortCol = "va", sortDir = 1, filter = "", lastSynced = 0, lastSig = "";
+try { const f = localStorage.getItem("kvmFilter"); if (f) filter = f; } catch (e) {}
+
+function human(n) {
+  const u = ["B", "K", "M", "G", "T"]; let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(v < 10 ? 1 : 0)) + u[i];
+}
+function rgClass(r) { return "rg rg-" + r.replace(/[^a-z]/g, ""); }
+function permsHtml(p) { return p.split("").map((c) => "wxu".includes(c) ? `<span class="${c}">${c}</span>` : c).join(""); }
+
+function buildHead() {
+  const tr = document.createElement("tr");
+  for (const c of COLS) {
+    const th = document.createElement("th");
+    th.textContent = c.label + (c.k === sortCol ? (sortDir > 0 ? " ▲" : " ▼") : "");
+    if (c.k === "region") th.className = "region";
+    if (c.k === "perms") th.className = "perms";
+    th.addEventListener("click", () => {
+      if (sortCol === c.k) sortDir = -sortDir; else { sortCol = c.k; sortDir = 1; }
+      render(true);
+    });
+    tr.appendChild(th);
+  }
+  const t = document.getElementById("thead"); t.innerHTML = ""; t.appendChild(tr);
+}
+
+function cmp(a, b) {
+  const col = COLS.find((c) => c.k === sortCol);
+  if (col.num) return (a[sortCol] - b[sortCol]) * sortDir;
+  if (sortCol === "va" || sortCol === "va_end") {
+    const x = BigInt(a[sortCol]), y = BigInt(b[sortCol]);
+    return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+  }
+  const x = (a[sortCol] || "").toString(), y = (b[sortCol] || "").toString();
+  return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+}
+
+function sizeCell(r) {
+  if (r.repeat) return `<span class="rep">${r.count} × ${human(r.page)}</span>`;
+  return human(r.size);
+}
+
+function render(force) {
+  buildHead();
+  const f = filter.trim().toLowerCase();
+  const rows = items.filter((r) => !f || r.region.toLowerCase().includes(f) || r.perms.includes(f)).sort(cmp);
+  const sig = sortCol + sortDir + f + "|" + lastSynced + "|" + rows.length;
+  if (!force && sig === lastSig) return;
+  lastSig = sig;
+  const tb = document.getElementById("tbody"); tb.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td class="region"><span class="${rgClass(r.region)}">${r.region}</span></td>` +
+      `<td>${r.va}</td><td>${r.va_end}</td><td>${sizeCell(r)}</td>` +
+      `<td class="perms">${permsHtml(r.perms)}</td><td>${r.phys}</td>`;
+    frag.appendChild(tr);
+  }
+  tb.appendChild(frag);
+  document.getElementById("count").textContent = `${rows.length} / ${items.length} entries`;
+}
+
+async function fetchList() {
+  try {
+    const r = await fetch("/kvmlist", { cache: "no-store" });
+    const j = await r.json();
+    items = j.items || [];
+    render(true);
+  } catch (e) { /* keep old list */ }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/data", { cache: "no-store" });
+    const j = await r.json();
+    document.getElementById("synccmd").textContent = (j.prefix || "kvmmap") + " sync";
+    const dot = document.getElementById("dot"), txt = document.getElementById("status-text"), err = document.getElementById("err");
+    if (j.error) { err.style.display = "block"; err.textContent = "讀取錯誤：" + j.error; }
+    else { err.style.display = "none"; }
+    document.getElementById("meta").textContent =
+      j.cr3 ? `CR3 = ${j.cr3} · ${j.count || 0} entries（純記憶體：頁表以 monitor xp 讀取）` : "";
+    if (j.synced_at && j.synced_at !== lastSynced) { lastSynced = j.synced_at; fetchList(); }
+    if (!j.synced) { dot.className = "dot"; txt.textContent = `尚未同步 — 請在 gdb 下 ${(j.prefix || "kvmmap")} sync`; }
+    else {
+      const when = new Date(j.synced_at * 1000).toLocaleTimeString();
+      dot.className = (Date.now() / 1000 - j.synced_at > 5) ? "dot stale" : "dot live";
+      txt.textContent = `已同步 ${when}`;
+    }
+  } catch (e) {
+    document.getElementById("dot").className = "dot";
+    document.getElementById("status-text").textContent = "無法連線到 gdb 伺服器";
+  }
+}
+
+document.getElementById("filter").value = filter;
+document.getElementById("filter").addEventListener("input", (e) => {
+  filter = e.target.value;
+  try { localStorage.setItem("kvmFilter", filter); } catch (err) {}
+  render(true);
+});
+
+buildHead();
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

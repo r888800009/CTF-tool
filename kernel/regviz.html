@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Register Visualizer</title>
+<link rel="stylesheet" href="/regviz.css">
+</head>
+<body>
+  <h1 id="title">Register Visualizer</h1>
+  <div class="sub">滑鼠移到任一 bit/field 上檢視解碼後的狀態。</div>
+  <div class="status">
+    <span class="dot" id="dot"></span>
+    <span id="status-text">尚未同步</span>
+    <span class="hint" id="hint">— 在 gdb 下 <code>sync</code> 更新</span>
+  </div>
+  <div id="mode-sel" class="rv-toolbar"></div>
+
+  <div id="regs"></div>
+  <div id="pt"></div>
+  <div id="tip"></div>
+
+  <!-- Per-arch register schema: sets window.REGS and window.REGVIZ_TITLE. -->
+  <script src="/regs.js"></script>
+  <script>
+// ---- Shared rendering engine ---------------------------------------------
+// A register schema entry (from /regs.js) may contain:
+//   name  : string
+//   desc  : string
+//   width : number of bits to draw as a grid (chunked into rows of 32)
+//   addr  : true to show the value padded to 16 hex digits (address-style)
+//   flags : { bit: [mnemonic, description] }            single-bit flags
+//   fields: [ { hi, lo, mn, desc, map? } ]              multi-bit fields
+//   decode: (BigInt) => [ [label, valueString], ... ]   extra decoded lines
+const REGS = window.REGS || [];
+const CHUNK = 32;
+
+// ---- Naming mode (e.g. Intel vs Linux mnemonics) -------------------------
+const MODES = window.REGVIZ_MODES || null;
+let nameMode = MODES ? MODES[0].key : null;
+
+// Resolve the mnemonic to show for a flag ([mn, desc, alt?]) or a field
+// ({mn, alt?}) under the current naming mode, falling back to the base name.
+function nameFor(entry) {
+  if (!entry) return "";
+  if (Array.isArray(entry)) {
+    return (nameMode && entry[2] && entry[2][nameMode]) ? entry[2][nameMode] : entry[0];
+  }
+  return (nameMode && entry.alt && entry.alt[nameMode]) ? entry.alt[nameMode] : entry.mn;
+}
+
+// Page-table level name under the current mode (e.g. PML4 vs Linux's PGD).
+function levelName(lvl) {
+  return (nameMode && lvl.alt && lvl.alt[nameMode]) ? lvl.alt[nameMode] : lvl.name;
+}
+
+function buildModeSelector() {
+  const box = document.getElementById("mode-sel");
+  if (!MODES) { box.style.display = "none"; return; }
+  try {
+    const s = localStorage.getItem("regNameMode");
+    if (s && MODES.some((m) => m.key === s)) nameMode = s;
+  } catch (e) {}
+  box.innerHTML = `命名模式（縮寫）：<select id="mode-select">` +
+    MODES.map((m) => `<option value="${m.key}"${m.key === nameMode ? " selected" : ""}>${m.label}</option>`).join("") +
+    `</select>`;
+  document.getElementById("mode-select").addEventListener("change", (e) => {
+    nameMode = e.target.value;
+    try { localStorage.setItem("regNameMode", nameMode); } catch (err) {}
+    buildTables(); render();
+    // Refresh page-table level names: the root header in place, the rest via
+    // re-render (which recreates nested nodes with the new level names).
+    if (PT) {
+      const rootLvl = document.querySelector("#pt-root > .pt-node > .pt-row > .pt-lvl");
+      if (rootLvl) rootLvl.textContent = levelName(PT.levels[0]);
+    }
+    rerenderLoaded();
+  });
+}
+
+// ---- Clipboard (for the paste-able gdb / WinDbg walk commands) ------------
+function copyText(s) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(s).catch(() => fallbackCopy(s));
+  } else { fallbackCopy(s); }
+}
+function fallbackCopy(s) {
+  const t = document.createElement("textarea");
+  t.value = s; t.style.position = "fixed"; t.style.opacity = "0";
+  document.body.appendChild(t); t.select();
+  try { document.execCommand("copy"); } catch (e) {}
+  t.remove();
+}
+
+const tip = document.getElementById("tip");
+let current = {};   // name -> BigInt value (or null when unsynced/unreadable)
+
+if (window.REGVIZ_TITLE) {
+  document.getElementById("title").textContent = window.REGVIZ_TITLE;
+  document.title = window.REGVIZ_TITLE;
+}
+
+function fieldAt(reg, bit) {
+  if (!reg.fields) return null;
+  for (const f of reg.fields) if (bit <= f.hi && bit >= f.lo) return f;
+  return null;
+}
+
+function extract(v, hi, lo) {
+  if (v === null || v === undefined) return null;
+  const mask = (1n << BigInt(hi - lo + 1)) - 1n;
+  return (v >> BigInt(lo)) & mask;
+}
+
+function buildTables() {
+  const root = document.getElementById("regs");
+  root.innerHTML = "";
+  for (const reg of REGS) {
+    const box = document.createElement("div");
+    box.className = "reg";
+    box.innerHTML =
+      `<div class="reg-head">
+         <span class="reg-name">${reg.name}</span>
+         <span class="reg-val" id="val-${reg.name}">—</span>
+       </div>
+       <div class="reg-desc">${reg.desc || ""}</div>`;
+
+    if (reg.width) {
+      const table = document.createElement("table");
+      table.className = "bits";
+      // Draw high bits first, chunked into rows of 32 for readability.
+      for (let top = reg.width - 1; top >= 0; top -= CHUNK) {
+        const bottom = Math.max(0, top - CHUNK + 1);
+        const tr = document.createElement("tr");
+        let b = top;
+        while (b >= bottom) {
+          const field = fieldAt(reg, b);
+          if (field && field.hi <= top && field.lo >= bottom) {
+            const td = mkCell(reg, field.hi, field.lo, field, null);
+            td.colSpan = field.hi - field.lo + 1;
+            tr.appendChild(td);
+            b = field.lo - 1;
+          } else {
+            const flag = reg.flags && reg.flags[b];
+            tr.appendChild(mkCell(reg, b, b, field || null, flag || null));
+            b -= 1;
+          }
+        }
+        table.appendChild(tr);
+      }
+      box.appendChild(table);
+    }
+
+    if (reg.decode || (reg.addr && !reg.width)) {
+      const d = document.createElement("div");
+      d.className = "decode";
+      d.id = "dec-" + reg.name;
+      box.appendChild(d);
+    }
+    root.appendChild(box);
+  }
+}
+
+function mkCell(reg, hi, lo, field, flag) {
+  const td = document.createElement("td");
+  const label = flag ? nameFor(flag) : field ? nameFor(field) : "";
+  td.className = "bit" + (flag ? "" : field ? " field" : " reserved");
+  const idx = hi === lo ? "" + hi : hi + ":" + lo;
+  td.innerHTML = `<span class="idx">${idx}</span><span class="mn">${label}</span>`;
+  td.dataset.reg = reg.name;
+  td.dataset.hi = hi;
+  td.dataset.lo = lo;
+  td.addEventListener("mousemove", (e) => showTip(e, reg, hi, lo, field, flag));
+  td.addEventListener("mouseleave", hideTip);
+  return td;
+}
+
+function showTip(e, reg, hi, lo, field, flag) {
+  const v = current[reg.name];
+  const regHex = (v === null || v === undefined) ? "n/a" : ("0x" + v.toString(16));
+  let title, desc, stateHtml;
+  if (flag) {
+    const st = (v === null || v === undefined) ? null : Number((v >> BigInt(lo)) & 1n);
+    title = `${reg.name}.${nameFor(flag)} (bit ${lo})`;
+    desc = flag[1];
+    stateHtml = st === null ? `<span class="badge clear">未同步 / 不可讀</span>`
+      : st ? `<span class="badge set">1 · SET</span>`
+           : `<span class="badge clear">0 · clear</span>`;
+  } else if (field) {
+    const val = extract(v, field.hi, field.lo);
+    title = `${reg.name}.${nameFor(field)} (bits ${field.hi}:${field.lo})`;
+    desc = field.desc || "";
+    if (val === null) {
+      stateHtml = `<span class="badge clear">未同步 / 不可讀</span>`;
+    } else {
+      const mapped = field.map && field.map[val.toString()] !== undefined
+        ? " · " + field.map[val.toString()] : "";
+      stateHtml = `<span class="badge field">0x${val.toString(16)} (${val})${mapped}</span>`;
+    }
+  } else {
+    title = `${reg.name} — bit ${lo} (reserved)`;
+    desc = "Reserved — should read as 0; do not modify.";
+    stateHtml = `<span class="badge clear">reserved</span>`;
+  }
+  tip.innerHTML =
+    `<div class="t-name">${title}</div>
+     <div class="t-state">${stateHtml}</div>
+     <div class="t-desc">${desc}</div>
+     <div class="t-reg">${reg.name} = ${regHex}</div>`;
+  positionTip(e);
+}
+function positionTip(e) {
+  tip.style.opacity = "1";
+  const pad = 14;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  const r = tip.getBoundingClientRect();
+  if (x + r.width > window.innerWidth) x = e.clientX - r.width - pad;
+  if (y + r.height > window.innerHeight) y = e.clientY - r.height - pad;
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+}
+function hideTip() { tip.style.opacity = "0"; }
+
+function render() {
+  for (const reg of REGS) {
+    const v = current[reg.name];
+    const valEl = document.getElementById("val-" + reg.name);
+    if (v === null || v === undefined) {
+      valEl.textContent = "n/a";
+      valEl.className = "reg-val na";
+    } else {
+      const pad = reg.addr ? 16 : Math.ceil((reg.width || 32) / 4);
+      valEl.textContent = "0x" + v.toString(16).padStart(pad, "0");
+      valEl.className = "reg-val";
+    }
+    document.querySelectorAll(`td.bit[data-reg="${reg.name}"]`).forEach((td) => {
+      const hi = Number(td.dataset.hi), lo = Number(td.dataset.lo);
+      const flag = td.classList.contains("reserved") ? null : true;
+      td.classList.remove("na");
+      if (v === null || v === undefined) { td.classList.add("na"); return; }
+      if (td.classList.contains("field")) return;      // fields keep their tint
+      if (td.classList.contains("reserved")) return;
+      const st = Number((v >> BigInt(lo)) & 1n);
+      td.classList.toggle("set", st === 1);
+    });
+    const dec = document.getElementById("dec-" + reg.name);
+    if (dec) {
+      if (v === null || v === undefined) {
+        dec.innerHTML = `<span class="k">未同步</span>`;
+      } else if (reg.decode) {
+        const rows = reg.decode(v) || [];
+        dec.innerHTML = rows.map(
+          ([k, val]) => `<div><span class="k">${k}:</span> <span class="v">${val}</span></div>`
+        ).join("");
+      } else {
+        dec.innerHTML = "";
+      }
+    }
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/data", { cache: "no-store" });
+    const j = await r.json();
+    for (const reg of REGS) {
+      const raw = j.regs[reg.name];
+      current[reg.name] = (raw === null || raw === undefined) ? null : BigInt(raw);
+    }
+    const dot = document.getElementById("dot");
+    const txt = document.getElementById("status-text");
+    const cmd = (j.prefix || "") + " sync";
+    syncCmd = cmd.trim();
+    document.getElementById("hint").innerHTML = `— 在 gdb 下 <code>${syncCmd}</code> 更新`;
+    if (!j.synced) {
+      dot.className = "dot"; txt.textContent = `尚未同步 — 請在 gdb 下 ${cmd.trim()}`;
+    } else {
+      const age = Date.now() / 1000 - j.synced_at;
+      const when = new Date(j.synced_at * 1000).toLocaleTimeString();
+      if (age > 5) { dot.className = "dot stale"; txt.textContent = `上次同步 ${when}（可能已過時）`; }
+      else { dot.className = "dot live"; txt.textContent = `已同步 ${when}`; }
+    }
+    render();
+    updatePageTable();
+  } catch (e) {
+    document.getElementById("dot").className = "dot";
+    document.getElementById("status-text").textContent = "無法連線到 gdb 伺服器";
+  }
+}
+
+// ---- Optional page-table tree --------------------------------------------
+// Driven entirely by window.REGVIZ_PAGETABLE (set per-arch in regs.js); when it
+// is absent this whole section stays empty, so non-paging arches are unaffected.
+// Config: { title, baseReg, baseMask, levels:[{name, shift, leaf?}],
+//           flags:{bit:[mn,desc]}, presentBit?, largePageBit?, canonicalBit?,
+//           entriesPerTable? }
+const PT = window.REGVIZ_PAGETABLE || null;
+let syncCmd = "sync";
+let ptLastBase = null;
+
+function ptMask() { return BigInt(PT.baseMask); }
+function hx(v) { return "0x" + v.toString(16); }
+
+function canonical(va) {
+  const bit = BigInt(PT.canonicalBit !== undefined ? PT.canonicalBit : 47);
+  if ((va >> bit) & 1n) return va | (((1n << (63n - bit)) - 1n) << (bit + 1n));
+  return va & ((1n << (bit + 1n)) - 1n);
+}
+
+function ptFlags(v) {
+  const fl = PT.flags || {};
+  return Object.keys(fl).map(Number).sort((a, b) => a - b)
+    .filter((bit) => (v >> BigInt(bit)) & 1n)
+    .map((bit) => `<b>${nameFor(fl[bit])}</b>`).join(" ");
+}
+
+function buildPtSection() {
+  if (!PT) return;
+  const root = document.getElementById("pt");
+  root.className = "pt-wrap";
+  root.innerHTML =
+    `<h2>${PT.title || "Page tables"}</h2>` +
+    `<div class="pt-hint" id="pt-hint"></div>` +
+    `<div class="pt-toolbar">每張表顯示：
+       <input type="number" id="pt-count" min="1" max="${PT.entriesPerTable || 512}" value="${PT.entriesPerTable || 512}">
+       <span class="pt-unit">筆（1–${PT.entriesPerTable || 512}）</span>
+       <label><input type="checkbox" id="pt-hidenp" checked> 隱藏 not present</label>
+     </div>` +
+    `<div id="pt-root"></div>`;
+  const sel = document.getElementById("pt-count");
+  const chk = document.getElementById("pt-hidenp");
+  try {
+    const s = localStorage.getItem("ptLimit"); if (s && /^\d+$/.test(s)) sel.value = s;
+    const h = localStorage.getItem("ptHideNP"); if (h !== null) chk.checked = h === "1";
+  } catch (e) {}
+  sel.addEventListener("change", () => {
+    sel.value = String(ptLimit());  // reflect the clamped value back
+    try { localStorage.setItem("ptLimit", sel.value); } catch (e) {}
+    rerenderLoaded();
+  });
+  chk.addEventListener("change", () => {
+    try { localStorage.setItem("ptHideNP", chk.checked ? "1" : "0"); } catch (e) {}
+    rerenderLoaded();
+  });
+  // Delegated copy for the paste-able gdb / WinDbg commands on tables and entries.
+  root.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-cmd]");
+    if (!t) return;
+    copyText(decodeURIComponent(t.dataset.cmd));
+    t.classList.add("copied");
+    setTimeout(() => t.classList.remove("copied"), 1200);
+  });
+  // Delegated hover tooltip: decode each bit of the row's entry value.
+  root.addEventListener("mousemove", (e) => {
+    const row = e.target.closest(".pt-row");
+    if (!row || row.dataset.ptv === undefined) { hideTip(); return; }
+    showPtTip(e, row);
+  });
+  root.addEventListener("mouseleave", hideTip);
+}
+
+function copySpan(cmd) {
+  return `<span class="pt-copy" data-cmd="${encodeURIComponent(cmd)}" ` +
+         `title="複製 gdb / WinDbg 指令">⧉</span>`;
+}
+
+// A single, clean QEMU-monitor command to view the VIRTUAL memory this entry maps
+// (monitor `x` = virtual, resolved through the CPU's current page tables). No
+// `monitor` prefix or comments, so it pastes straight into the QEMU HMP monitor.
+function vaViewSpan(va) {
+  const cmd = `x /512gx 0x${va.toString(16)}`;
+  return `<span class="pt-cmd pt-view" data-cmd="${encodeURIComponent(cmd)}" ` +
+    `title="複製 QEMU monitor 指令查看此虛擬位址的記憶體：${cmd}">看 VA</span>`;
+}
+
+// gdb (QEMU monitor) + WinDbg commands to dump one whole table at `phys`.
+function tableCmds(phys, n) {
+  const p = "0x" + phys.toString(16);
+  return {
+    gdb: `monitor xp/${n}gx ${p}`,
+    windbg: `!dq ${p} L${n.toString(16)}`,
+  };
+}
+
+// Per-entry command bundle: read the entry, follow it, and the WinDbg VA walk.
+function entryCmds(lvlName, phys, i, va, nextBase, leaf, nextName) {
+  const eaddr = "0x" + (phys + BigInt(i) * 8n).toString(16);
+  const nb = "0x" + nextBase.toString(16);
+  const vah = "0x" + va.toString(16);
+  const L = [];
+  L.push(`# gdb (QEMU): read this ${lvlName} entry`);
+  L.push(`monitor xp/1gx ${eaddr}`);
+  L.push(leaf ? `# gdb: read the mapped frame` : `# gdb: dump next table (${nextName})`);
+  L.push(`monitor xp/512gx ${nb}`);
+  L.push(`# WinDbg: walk this virtual address`);
+  L.push(`!pte ${vah}`);
+  if (!leaf) L.push(`!dq ${nb} L200`);
+  return L.join("\n");
+}
+
+// Stamp the per-entry data a hover tooltip needs onto a row element.
+function stampRow(rowEl, raw, level, i, va, kind) {
+  rowEl.dataset.ptv = raw;
+  rowEl.dataset.ptlvl = level;
+  rowEl.dataset.pti = i;
+  rowEl.dataset.ptva = "0x" + va.toString(16);
+  rowEl.dataset.ptkind = kind;
+}
+
+// Tooltip for a page-table row: every defined flag bit with its live 0/1 state
+// (from the entry value) and its description, plus the raw value and VA.
+function showPtTip(e, row) {
+  const v = BigInt(row.dataset.ptv);
+  const level = Number(row.dataset.ptlvl);
+  const lvl = PT.levels[level];
+  const fl = PT.flags || {};
+  const lines = Object.keys(fl).map(Number).sort((a, b) => b - a).map((bit) => {
+    const set = Number((v >> BigInt(bit)) & 1n);
+    return `<div class="ptt-line ${set ? "ptt-set" : "ptt-clear"}">` +
+      `<span class="ptt-bit">bit ${bit}</span> <b>${nameFor(fl[bit])}</b> = ${set}` +
+      `<span class="ptt-d">${fl[bit][1] || ""}</span></div>`;
+  }).join("");
+  tip.innerHTML =
+    `<div class="t-name">${levelName(lvl)} entry [${row.dataset.pti}] · ${row.dataset.ptkind}</div>` +
+    `<div class="t-reg">value = 0x${v.toString(16)} · VA ${row.dataset.ptva}</div>` +
+    `<div class="ptt">${lines}</div>`;
+  positionTip(e);
+}
+
+function ptLimit() {
+  const max = (PT && PT.entriesPerTable) || 512;
+  const sel = document.getElementById("pt-count");
+  const n = sel ? parseInt(sel.value, 10) : max;
+  if (isNaN(n)) return max;
+  return Math.max(1, Math.min(n, max));
+}
+function ptHideNP() {
+  const c = document.getElementById("pt-hidenp");
+  return c ? c.checked : true;
+}
+
+function rerenderLoaded() {
+  document.querySelectorAll('.pt-children[data-loaded="1"]').forEach((c) => {
+    if (c._entries) renderEntries(c);
+  });
+}
+
+function updatePageTable() {
+  if (!PT) return;
+  const base = current[PT.baseReg];
+  const hint = document.getElementById("pt-hint");
+  const rootEl = document.getElementById("pt-root");
+  if (base === null || base === undefined) {
+    hint.textContent = `尚未同步 ${PT.baseReg} — 先在 gdb 下 ${syncCmd}`;
+    rootEl.innerHTML = ""; ptLastBase = null; return;
+  }
+  const tableBase = base & ptMask();
+  if (ptLastBase === tableBase) return;   // unchanged: keep the expanded tree
+  ptLastBase = tableBase;
+  hint.innerHTML =
+    `${PT.baseReg} = <span class="pt-val">${hx(base)}</span> → ` +
+    `${levelName(PT.levels[0])} @ <span class="pt-val">${hx(tableBase)}</span>。` +
+    `點擊節點逐層展開（透過 gdb monitor 讀實體記憶體）。`;
+  rootEl.innerHTML = "";
+  rootEl.appendChild(makeNode(headHtml(levelName(PT.levels[0]), tableBase), tableBase, 0, 0n));
+}
+
+function headHtml(label, phys) {
+  return `<span class="pt-tw">▸</span><span class="pt-lvl">${label}</span>` +
+         ` @ <span class="pt-val">${hx(phys)}</span>`;
+}
+
+function makeNode(rowHtml, phys, level, vaAcc) {
+  const node = document.createElement("div");
+  node.className = "pt-node";
+  const row = document.createElement("div");
+  row.className = "pt-row expandable";
+  row.innerHTML = rowHtml;
+  const children = document.createElement("div");
+  children.className = "pt-children";
+  children.style.display = "none";
+  node.appendChild(row); node.appendChild(children);
+  row.addEventListener("click", (e) => {
+    if (e.target.closest("[data-cmd]")) return;  // let a copy button do only that
+    togglePhys(row, children, phys, level, vaAcc);
+  });
+  return node;
+}
+
+async function togglePhys(row, children, phys, level, vaAcc) {
+  const tw = row.querySelector(".pt-tw");
+  if (children.dataset.loaded) {
+    const showing = children.style.display !== "none";
+    children.style.display = showing ? "none" : "block";
+    tw.textContent = showing ? "▸" : "▾";
+    return;
+  }
+  children.style.display = "block"; tw.textContent = "▾";
+  children.innerHTML = `<div class="pt-loading">讀取中…</div>`;
+  let j;
+  try {
+    const n = PT.entriesPerTable || 512;
+    const r = await fetch(`/mem?phys=${phys.toString(16)}&count=${n}`, { cache: "no-store" });
+    j = await r.json();
+  } catch (e) { children.innerHTML = `<div class="pt-err">讀取失敗：${e}</div>`; return; }
+  if (!j.ok) { children.innerHTML = `<div class="pt-err">讀取失敗：${j.error}</div>`; return; }
+
+  // Cache the raw table so the display-count menu can re-render without re-reading.
+  children._entries = j.values;
+  children._level = level;
+  children._va = vaAcc;
+  children._phys = phys;
+  children.dataset.loaded = "1";
+  renderEntries(children);
+}
+
+// Render one already-read table according to the display-count menu: either only
+// present entries, or the first N entries (present or not) so the whole page
+// directory's contents can be inspected.
+function renderEntries(children) {
+  const values = children._entries;
+  const level = children._level;
+  const vaAcc = children._va;
+  const lvl = PT.levels[level];
+  const shift = BigInt(lvl.shift);
+  const presentBit = BigInt(PT.presentBit !== undefined ? PT.presentBit : 0);
+  const limit = Math.min(ptLimit(), values.length);
+  const hideNP = ptHideNP();
+
+  children.innerHTML = "";
+
+  // Paste-able commands to dump this whole table in gdb / WinDbg.
+  const tc = tableCmds(children._phys, values.length);
+  const cmds = document.createElement("div");
+  cmds.className = "pt-cmds";
+  cmds.innerHTML =
+    `<span class="pt-cmd" data-cmd="${encodeURIComponent(tc.gdb)}">gdb: ${tc.gdb}</span>` +
+    `<span class="pt-cmd" data-cmd="${encodeURIComponent(tc.windbg)}">windbg: ${tc.windbg}</span>`;
+  children.appendChild(cmds);
+
+  let shown = 0, present = 0;
+  for (let i = 0; i < limit; i++) {
+    const raw = values[i];
+    const v = BigInt(raw);
+    const isPresent = !!((v >> presentBit) & 1n);
+    if (!isPresent && hideNP) continue;
+    const va = canonical(vaAcc | (BigInt(i) << shift));
+
+    if (!isPresent) {
+      const d = document.createElement("div");
+      d.className = "pt-row pt-np";
+      d.innerHTML =
+        `<span class="pt-tw"> </span><span class="pt-idx">[${i}]</span> ` +
+        `<span class="pt-val">${raw}</span> <span class="pt-fl">not present</span> ` +
+        `<span class="pt-va">VA ${hx(va)}</span>`;
+      stampRow(d, raw, level, i, va, "not present");
+      children.appendChild(d); shown++;
+      continue;
+    }
+    present++; shown++;
+    const isLast = !!lvl.leaf || level === PT.levels.length - 1;
+    const isLarge = !isLast && PT.largePageBit !== undefined
+      && ((v >> BigInt(PT.largePageBit)) & 1n);
+    const nextBase = v & ptMask();
+    const next = isLast ? null : levelName(PT.levels[level + 1]);
+    const bundle = copySpan(entryCmds(levelName(lvl), children._phys, i, va, nextBase, isLast || isLarge, next));
+    const vaview = vaViewSpan(va);
+    if (isLast || isLarge) {
+      const d = document.createElement("div");
+      d.className = "pt-row pt-leaf";
+      const kind = isLarge ? (levelName(lvl) + " large page") : "4K page";
+      d.innerHTML =
+        `<span class="pt-tw"> </span><span class="pt-idx">[${i}]</span> ` +
+        `<span class="pt-val">${raw}</span> <span class="pt-fl">${ptFlags(v)}</span> ` +
+        `→ frame <span class="pt-val">${hx(nextBase)}</span> ` +
+        `<span class="pt-va">VA ${hx(va)} (${kind})</span> ${vaview} ${bundle}`;
+      stampRow(d, raw, level, i, va, kind);
+      children.appendChild(d);
+    } else {
+      const rowHtml =
+        `<span class="pt-tw">▸</span><span class="pt-idx">[${i}]</span> ` +
+        `<span class="pt-val">${raw}</span> <span class="pt-fl">${ptFlags(v)}</span> ` +
+        `→ <span class="pt-lvl">${next}</span> @ <span class="pt-val">${hx(nextBase)}</span> ` +
+        `<span class="pt-va">VA ${hx(va)}</span> ${vaview} ${bundle}`;
+      const node = makeNode(rowHtml, nextBase, level + 1, va);
+      stampRow(node.querySelector(".pt-row"), raw, level, i, va, "→ " + next);
+      children.appendChild(node);
+    }
+  }
+  const note = document.createElement("div");
+  note.className = "pt-hint";
+  note.textContent = shown === 0
+    ? (hideNP ? `前 ${limit} 筆內無 present entry` : "無 entry")
+    : `顯示前 ${limit} / ${values.length} 筆（present ${present}${hideNP ? "，已隱藏 not present" : ""}）`;
+  children.appendChild(note);
+}
+
+buildModeSelector();
+buildTables();
+buildPtSection();
+poll();
+setInterval(poll, 1000);
+  </script>
+</body>
+</html>
