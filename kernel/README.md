@@ -114,7 +114,11 @@ paging hierarchy live from `CR3`:
    the whole page directory including empty slots.
 5. Each table and entry has a small copy control that yields **paste-able gdb and
    WinDbg commands** for that step of the walk — e.g. `monitor xp/512gx <phys>`
-   for gdb (QEMU), and `!dq <phys> L200` / `!pte <va>` for WinDbg.
+   for gdb (QEMU), and `!dq <phys> L200` / `!pte <va>` for WinDbg. Each entry also
+   has a **看 VA** button that copies a single clean QEMU-monitor command
+   (`x /512gx 0x<va>`, no prefix or comments) to view the **virtual memory** that
+   entry maps, straight in the HMP monitor (`x` reads virtual memory through the
+   CPU's current page tables, unlike the physical `xp`).
 6. Hovering any entry row shows a tooltip that **decodes every bit** of that
    entry — each flag's name, its live 0/1 value, and its description — plus the
    raw entry value and virtual address.

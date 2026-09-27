@@ -117,6 +117,8 @@
   }
   .pt-cmd:hover, .pt-copy:hover { border-color: var(--accent); color: var(--text); }
   .pt-copy { padding: 0 6px; }
+  .pt-view { color: var(--field-fg); border-color: var(--border); }
+  .pt-view:hover { border-color: var(--field-fg); }
   .pt-cmd.copied, .pt-copy.copied { border-color: var(--set); color: #7ee787; }
   .pt-cmd.copied::after, .pt-copy.copied::after { content: " ✓"; }
 
@@ -503,6 +505,15 @@ function copySpan(cmd) {
          `title="複製 gdb / WinDbg 指令">⧉</span>`;
 }
 
+// A single, clean QEMU-monitor command to view the VIRTUAL memory this entry maps
+// (monitor `x` = virtual, resolved through the CPU's current page tables). No
+// `monitor` prefix or comments, so it pastes straight into the QEMU HMP monitor.
+function vaViewSpan(va) {
+  const cmd = `x /512gx 0x${va.toString(16)}`;
+  return `<span class="pt-cmd pt-view" data-cmd="${encodeURIComponent(cmd)}" ` +
+    `title="複製 QEMU monitor 指令查看此虛擬位址的記憶體：${cmd}">看 VA</span>`;
+}
+
 // gdb (QEMU monitor) + WinDbg commands to dump one whole table at `phys`.
 function tableCmds(phys, n) {
   const p = "0x" + phys.toString(16);
@@ -694,6 +705,7 @@ function renderEntries(children) {
     const nextBase = v & ptMask();
     const next = isLast ? null : levelName(PT.levels[level + 1]);
     const bundle = copySpan(entryCmds(levelName(lvl), children._phys, i, va, nextBase, isLast || isLarge, next));
+    const vaview = vaViewSpan(va);
     if (isLast || isLarge) {
       const d = document.createElement("div");
       d.className = "pt-row pt-leaf";
@@ -702,7 +714,7 @@ function renderEntries(children) {
         `<span class="pt-tw"> </span><span class="pt-idx">[${i}]</span> ` +
         `<span class="pt-val">${raw}</span> <span class="pt-fl">${ptFlags(v)}</span> ` +
         `→ frame <span class="pt-val">${hx(nextBase)}</span> ` +
-        `<span class="pt-va">VA ${hx(va)} (${kind})</span> ${bundle}`;
+        `<span class="pt-va">VA ${hx(va)} (${kind})</span> ${vaview} ${bundle}`;
       stampRow(d, raw, level, i, va, kind);
       children.appendChild(d);
     } else {
@@ -710,7 +722,7 @@ function renderEntries(children) {
         `<span class="pt-tw">▸</span><span class="pt-idx">[${i}]</span> ` +
         `<span class="pt-val">${raw}</span> <span class="pt-fl">${ptFlags(v)}</span> ` +
         `→ <span class="pt-lvl">${next}</span> @ <span class="pt-val">${hx(nextBase)}</span> ` +
-        `<span class="pt-va">VA ${hx(va)}</span> ${bundle}`;
+        `<span class="pt-va">VA ${hx(va)}</span> ${vaview} ${bundle}`;
       const node = makeNode(rowHtml, nextBase, level + 1, va);
       stampRow(node.querySelector(".pt-row"), raw, level, i, va, "→ " + next);
       children.appendChild(node);
