@@ -21,11 +21,12 @@ addresses, interrupt masks, and so on.
 
 All four plugins behave the same way and share the same UI.
 
-There is also a **slab viewer** built on the same server:
+There are also memory viewers built on the same server:
 
 | Viewer | Folder | Source in gdb | Web command | Default port | Shows |
 | --- | --- | --- | --- | --- | --- |
 | SLUB slab caches | `kernel/slab/` | `source kernel/slab/slab_viz.py` | `slabviz` | 8774 | every `kmem_cache`: sizes, objs/slab, per-node slab/object counts |
+| Kernel VM map | `kernel/kvmmap/` | `source kernel/kvmmap/kvmmap_viz.py` | `kvmmap` | 8775 | CR3 page tables coalesced into regions (VA/size/phys/perms/region) |
 
 ## Layout
 
@@ -201,6 +202,28 @@ Two decode modes, chosen automatically (shown on the page):
 Requirements: a Linux **SLUB** target (the kernel default) with at least the
 `slab_caches` symbol. All reads are defensive, so a differing kernel shows what it
 can and reports a clear error otherwise (e.g. on a non-kernel target).
+
+## Kernel VM map (kvmmap)
+
+`kernel/kvmmap/kvmmap_viz.py` is a `vmmap` for the kernel: it walks the current
+`CR3`'s 4-level page tables and coalesces contiguous mappings with identical
+permissions into regions.
+
+```gdb
+(gdb) source kernel/kvmmap/kvmmap_viz.py
+(gdb) kvmmap sync
+```
+
+Each row is a region: VA start/end, size, physical base, permissions
+(`r/w/x`, `u`ser vs `s`upervisor, `g`lobal) and a **region label** — user, kernel
+image, modules, direct map, vmalloc, vmemmap or vsyscall — coloured by area
+(pwntools-style). Click a column header to sort; filter by region or perms.
+
+Like the slab viewer this is **pure memory, no symbols**: `CR3` is a register and
+the page tables are read as physical memory over the QEMU monitor (`monitor xp`).
+Targets x86-64 4-level paging; region boundaries follow
+`Documentation/arch/x86/x86_64/mm.rst` and tolerate KASLR (the coarse windows are
+fixed even though the bases move).
 
 ## Notes
 
