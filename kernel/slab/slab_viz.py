@@ -26,6 +26,37 @@ importlib.reload(regviz_common)  # pick up edits to the shared module on re-sour
 import gdb  # noqa: E402  (provided by the gdb Python runtime)
 
 
+def _ptr_size():
+    try:
+        return int(gdb.parse_and_eval("sizeof(void *)"))
+    except Exception:  # noqa: BLE001
+        return 8
+
+
+def _read_mem(addr, n):
+    """Raw memory read → bytes (works from the symbol addresses alone)."""
+    return bytes(gdb.selected_inferior().read_memory(addr, n))
+
+
+def _rd_uint(addr, n):
+    return int.from_bytes(_read_mem(addr, n), "little")
+
+
+def _rd_ptr(addr):
+    return _rd_uint(addr, _ptr_size())
+
+
+def _field_off(t, name):
+    """Byte offset of a named field in a struct type, or None."""
+    try:
+        for f in t.fields():
+            if f.name == name and getattr(f, "bitpos", None) is not None:
+                return f.bitpos // 8
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _field_int(val, *names):
     """First readable integer field among `names`, else None."""
     for n in names:
@@ -121,13 +152,16 @@ def _kmem_cache_type():
         return t
     except (gdb.error, TypeError, RuntimeError):
         pass
-    for expr in ("kmem_cache", "kmem_cache_node"):
+    # Derive the complete type from any expression known to be a struct kmem_cache
+    # (a pointer global, its dereference, or a kmalloc_caches slot).
+    for expr in ("kmem_cache", "kmem_cache_node", "*kmem_cache",
+                 "kmalloc_caches[0]", "kmalloc_caches[0][0]"):
         try:
             t = gdb.parse_and_eval(expr).type.strip_typedefs()
-            if t.code == gdb.TYPE_CODE_PTR:
-                tt = t.target().strip_typedefs()
-                tt.fields()  # ensure it is a complete struct
-                return tt
+            while t.code in (gdb.TYPE_CODE_PTR, gdb.TYPE_CODE_ARRAY):
+                t = t.target().strip_typedefs()
+            t.fields()  # ensure it is a complete struct
+            return t
         except (gdb.error, TypeError, RuntimeError):
             continue
     raise gdb.error(
@@ -136,26 +170,38 @@ def _kmem_cache_type():
 
 
 def _walk_caches():
-    """Every kmem_cache reachable from the global `slab_caches` list."""
+    """Every kmem_cache reachable from the global `slab_caches` list.
+
+    Traversal is done purely through memory: only the address of the
+    `slab_caches` symbol is needed, and the list ring is followed by reading each
+    `list_head.next` pointer (at offset 0) directly, so it does not depend on the
+    `struct kmem_cache` / `struct list_head` types being resolvable by name. The
+    container type is still needed to *decode* each cache's fields.
+    """
+    try:
+        head = int(gdb.parse_and_eval("&slab_caches"))
+    except gdb.error:
+        raise gdb.error("symbol 'slab_caches' not found — load the kernel symbols")
+
+    # Follow the ring by reading raw `next` pointers from memory.
+    nodes = []
+    seen = set()
+    node = _rd_ptr(head)
+    while node and node != head and node not in seen and len(nodes) < 1000000:
+        seen.add(node)
+        nodes.append(node)
+        node = _rd_ptr(node)
+
     kc = _kmem_cache_type()
     kcp = kc.pointer()
-    off = None
-    for f in kc.fields():
-        if f.name == "list":
-            off = f.bitpos // 8
-            break
-    if off is None:
+    list_off = _field_off(kc, "list")
+    if list_off is None:
         raise gdb.error("struct kmem_cache has no 'list' member (unexpected layout)")
 
-    head_addr = int(gdb.parse_and_eval("&slab_caches"))
-    node = int(gdb.parse_and_eval("slab_caches")["next"])
     caches = []
-    guard = 0
-    while node != head_addr and guard < 100000:
-        guard += 1
-        cache = gdb.Value(node - off).cast(kcp).dereference()
+    for n in nodes:
+        cache = gdb.Value(n - list_off).cast(kcp).dereference()
         caches.append(_summarize(cache))
-        node = int(cache["list"]["next"])
     caches.sort(key=lambda c: (c.get("name") or "").lower())
     return caches
 

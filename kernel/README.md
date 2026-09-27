@@ -166,10 +166,17 @@ offset, objects per slab, page order, and the per-NUMA-node slab / object /
 partial counts (summed across nodes). Click a column header to sort; type in the
 box to filter by name.
 
+The list is walked **directly through memory**: only the address of the
+`slab_caches` symbol is needed, and the ring is followed by reading each
+`list_head.next` pointer, so traversal does not depend on `struct kmem_cache`
+being resolvable by name. Decoding each cache's fields still needs the struct
+type, which is resolved robustly (by name, or derived from a `struct kmem_cache *`
+global such as `kmem_cache`).
+
 Requirements: a **Linux kernel target with debug info** (a `vmlinux` built with
 DWARF) using the **SLUB** allocator (the kernel default). Every field is read
-defensively via gdb's type introspection, so a differing kernel version shows
-what it can and reports a clear error otherwise (e.g. on a non-kernel target).
+defensively, so a differing kernel version shows what it can and reports a clear
+error otherwise (e.g. on a non-kernel target).
 
 ## Notes
 
