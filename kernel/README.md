@@ -107,8 +107,9 @@ paging hierarchy live from `CR3`:
    (`P/RW/US/PWT/PCD/A/D/PS/G/NX`), the next-level physical base, and the
    (canonical) virtual address it covers. A `PS` entry at PDPT/PD is a
    1 GiB / 2 MiB large-page leaf; PT entries are 4 KiB leaves.
-4. The **每張表顯示** menu chooses how many entries of each table to show
-   (16…512), and the **隱藏 not present** checkbox hides non-present entries — on
+4. The **每張表顯示** number field takes any count of entries to show per table
+   (1–512, typed in directly), and the **隱藏 not present** checkbox hides
+   non-present entries — on
    by default, so you normally see only mapped entries; turn it off to inspect
    the whole page directory including empty slots.
 5. Each table and entry has a small copy control that yields **paste-able gdb and

@@ -102,10 +102,12 @@
   .pt-np { opacity: .42; }
   .pt-toolbar { font-size: 13px; color: var(--muted); margin-bottom: 10px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   .pt-toolbar label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
-  .pt-toolbar select, .rv-toolbar select {
+  .pt-toolbar select, .rv-toolbar select, .pt-toolbar input[type=number] {
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 3px 8px; font-size: 13px;
   }
+  .pt-toolbar input[type=number] { width: 5em; }
+  .pt-unit { color: var(--muted); }
   .rv-toolbar { font-size: 13px; color: var(--muted); margin: -12px 0 24px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .pt-cmds { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 8px; }
   .pt-cmd, .pt-copy {
@@ -459,14 +461,8 @@ function buildPtSection() {
     `<h2>${PT.title || "Page tables"}</h2>` +
     `<div class="pt-hint" id="pt-hint"></div>` +
     `<div class="pt-toolbar">每張表顯示：
-       <select id="pt-count">
-         <option value="16">前 16 筆</option>
-         <option value="32">前 32 筆</option>
-         <option value="64">前 64 筆</option>
-         <option value="128">前 128 筆</option>
-         <option value="256">前 256 筆</option>
-         <option value="512" selected>全部 512 筆</option>
-       </select>
+       <input type="number" id="pt-count" min="1" max="${PT.entriesPerTable || 512}" value="${PT.entriesPerTable || 512}">
+       <span class="pt-unit">筆（1–${PT.entriesPerTable || 512}）</span>
        <label><input type="checkbox" id="pt-hidenp" checked> 隱藏 not present</label>
      </div>` +
     `<div id="pt-root"></div>`;
@@ -477,6 +473,7 @@ function buildPtSection() {
     const h = localStorage.getItem("ptHideNP"); if (h !== null) chk.checked = h === "1";
   } catch (e) {}
   sel.addEventListener("change", () => {
+    sel.value = String(ptLimit());  // reflect the clamped value back
     try { localStorage.setItem("ptLimit", sel.value); } catch (e) {}
     rerenderLoaded();
   });
@@ -561,9 +558,11 @@ function showPtTip(e, row) {
 }
 
 function ptLimit() {
+  const max = (PT && PT.entriesPerTable) || 512;
   const sel = document.getElementById("pt-count");
-  const n = sel ? parseInt(sel.value, 10) : 512;
-  return isNaN(n) ? 512 : n;
+  const n = sel ? parseInt(sel.value, 10) : max;
+  if (isNaN(n)) return max;
+  return Math.max(1, Math.min(n, max));
 }
 function ptHideNP() {
   const c = document.getElementById("pt-hidenp");
