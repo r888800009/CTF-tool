@@ -38,6 +38,37 @@ def _read_mem(addr, n):
     return bytes(gdb.selected_inferior().read_memory(addr, n))
 
 
+def _sym_addr(name):
+    """Address of a symbol via any means gdb offers — debug info, the ELF minimal
+    symbol table (no DWARF needed), or a global symbol — or None if unknown."""
+    try:
+        return int(gdb.parse_and_eval("&" + name))
+    except gdb.error:
+        pass
+    try:
+        ms = gdb.lookup_minimal_symbol(name)
+        if ms is not None:
+            fn = getattr(ms, "value_address", None)
+            if fn:
+                a = int(fn())
+                if a:
+                    return a
+            a = int(ms.value().address)  # older gdb
+            if a:
+                return a
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        sym = gdb.lookup_global_symbol(name)
+        if sym is not None:
+            a = int(sym.value().address)
+            if a:
+                return a
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _rd_uint(addr, n):
     return int.from_bytes(_read_mem(addr, n), "little")
 
@@ -217,8 +248,11 @@ def _enumerate_nodes(head):
 def _anchor_base():
     """A known kmem_cache instance address from a symbol (needs no type info)."""
     for sym in ("kmem_cache", "kmem_cache_node"):
+        addr = _sym_addr(sym)
+        if addr is None:
+            continue
         try:
-            inst = _rd_ptr(int(gdb.parse_and_eval("&" + sym)))
+            inst = _rd_ptr(addr)
         except gdb.error:
             continue
         if inst:
@@ -294,10 +328,17 @@ def _walk_caches():
     `struct kmem_cache` type is available; otherwise the layout is discovered by
     scanning memory (:func:`_scan_caches`). Returns ``(caches, meta)``.
     """
-    try:
-        head = int(gdb.parse_and_eval("&slab_caches"))
-    except gdb.error:
-        raise gdb.error("symbol 'slab_caches' not found — load the kernel symbols")
+    head = None
+    for hsym in ("slab_caches", "cache_chain"):
+        head = _sym_addr(hsym)
+        if head is not None:
+            break
+    if head is None:
+        raise gdb.error(
+            "could not resolve 'slab_caches' — no kernel symbols are loaded. "
+            "Load the matching vmlinux (e.g. `file vmlinux`, or "
+            "`add-symbol-file vmlinux <kaslr_base>`) and check `p &slab_caches` "
+            "works, then run `slabviz sync` again")
     nodes = _enumerate_nodes(head)
 
     try:
