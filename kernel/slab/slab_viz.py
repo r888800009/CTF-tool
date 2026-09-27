@@ -107,9 +107,37 @@ def _summarize(cache):
     return d
 
 
+def _kmem_cache_type():
+    """Resolve the complete `struct kmem_cache` type.
+
+    `gdb.lookup_type("struct kmem_cache")` can fail ("No struct type named
+    kmem_cache") or return an opaque forward declaration on some vmlinux builds,
+    so fall back to deriving the type from a global that is declared as
+    `struct kmem_cache *` (both SLAB and SLUB define these in mm/slab_common.c).
+    """
+    try:
+        t = gdb.lookup_type("struct kmem_cache")
+        t.fields()  # raises TypeError if this is only a forward declaration
+        return t
+    except (gdb.error, TypeError, RuntimeError):
+        pass
+    for expr in ("kmem_cache", "kmem_cache_node"):
+        try:
+            t = gdb.parse_and_eval(expr).type.strip_typedefs()
+            if t.code == gdb.TYPE_CODE_PTR:
+                tt = t.target().strip_typedefs()
+                tt.fields()  # ensure it is a complete struct
+                return tt
+        except (gdb.error, TypeError, RuntimeError):
+            continue
+    raise gdb.error(
+        "could not resolve 'struct kmem_cache' — load a vmlinux with full debug "
+        "info (DWARF) for the running kernel")
+
+
 def _walk_caches():
     """Every kmem_cache reachable from the global `slab_caches` list."""
-    kc = gdb.lookup_type("struct kmem_cache")
+    kc = _kmem_cache_type()
     kcp = kc.pointer()
     off = None
     for f in kc.fields():
