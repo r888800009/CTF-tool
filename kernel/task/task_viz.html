@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task List</title>
+<link rel="stylesheet" href="/regviz.css">
+<style>
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .bar input { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 13px; min-width: 220px; }
+  .count { color: var(--muted); font-size: 13px; }
+  .err { color: var(--warn); font-size: 13px; margin-bottom: 12px; }
+  table.ps { border-collapse: collapse; width: 100%; max-width: 760px; font-size: 13px; }
+  table.ps th, table.ps td { border: 1px solid var(--border); padding: 5px 10px; text-align: right; white-space: nowrap; }
+  table.ps th { background: var(--panel); position: sticky; top: 0; cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; }
+  table.ps th:hover { color: var(--text); }
+  table.ps td { font-family: ui-monospace, Consolas, monospace; }
+  table.ps td.comm, table.ps th.comm { text-align: left; color: var(--text); font-weight: 600; }
+  table.ps td.node { color: var(--accent); }
+  table.ps tr:hover td { background: var(--panel2); }
+</style>
+</head>
+<body>
+  <h1>Task List</h1>
+  <div class="sub">從記憶體掃描出的 task_struct（行程）— 在 gdb 下 <code id="synccmd">taskviz sync</code> 更新。點欄位標題排序。</div>
+  <div class="status"><span class="dot" id="dot"></span><span id="status-text">尚未同步</span></div>
+  <div class="count" id="meta" style="margin-bottom:12px"></div>
+  <div class="err" id="err" style="display:none"></div>
+  <div class="bar">
+    <input id="filter" type="text" placeholder="以名稱或 PID 過濾">
+    <span class="count" id="count"></span>
+  </div>
+  <table class="ps"><thead id="thead"></thead><tbody id="tbody"></tbody></table>
+
+<script>
+const COLS = [
+  { k: "pid", label: "PID", num: true },
+  { k: "comm", label: "comm", num: false },
+  { k: "node", label: "tasks node", num: false },
+];
+let tasks = [], sortCol = "pid", sortDir = 1, filter = "", lastSig = "";
+try { const f = localStorage.getItem("taskFilter"); if (f) filter = f; } catch (e) {}
+
+function buildHead() {
+  const tr = document.createElement("tr");
+  for (const c of COLS) {
+    const th = document.createElement("th");
+    th.textContent = c.label + (c.k === sortCol ? (sortDir > 0 ? " ▲" : " ▼") : "");
+    if (c.k === "comm") th.className = "comm";
+    th.addEventListener("click", () => {
+      if (sortCol === c.k) sortDir = -sortDir; else { sortCol = c.k; sortDir = 1; }
+      render(true);
+    });
+    tr.appendChild(th);
+  }
+  const t = document.getElementById("thead"); t.innerHTML = ""; t.appendChild(tr);
+}
+
+function cmp(a, b) {
+  const col = COLS.find((c) => c.k === sortCol);
+  let x = a[sortCol], y = b[sortCol];
+  if (col.num) {
+    x = (x === null || x === undefined) ? Infinity : x;
+    y = (y === null || y === undefined) ? Infinity : y;
+    return (x - y) * sortDir;
+  }
+  x = (x || "").toString().toLowerCase(); y = (y || "").toString().toLowerCase();
+  return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+}
+
+function render(force) {
+  buildHead();
+  const f = filter.trim().toLowerCase();
+  const rows = tasks.filter((t) =>
+    !f || (t.comm || "").toLowerCase().includes(f) || String(t.pid).includes(f)).sort(cmp);
+  const sig = JSON.stringify(rows) + sortCol + sortDir + f;
+  if (!force && sig === lastSig) return;
+  lastSig = sig;
+  const tb = document.getElementById("tbody"); tb.innerHTML = "";
+  for (const t of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${t.pid === null || t.pid === undefined ? "—" : t.pid}</td>` +
+      `<td class="comm">${(t.comm || "").replace(/</g, "&lt;") || "(anon)"}</td>` +
+      `<td class="node">${t.node}</td>`;
+    tb.appendChild(tr);
+  }
+  document.getElementById("count").textContent = `${rows.length} / ${tasks.length} tasks`;
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/data", { cache: "no-store" });
+    const j = await r.json();
+    tasks = j.tasks || [];
+    document.getElementById("synccmd").textContent = (j.prefix || "taskviz") + " sync";
+    const dot = document.getElementById("dot"), txt = document.getElementById("status-text"), err = document.getElementById("err");
+    if (j.error) { err.style.display = "block"; err.textContent = "讀取錯誤：" + j.error; }
+    else { err.style.display = "none"; }
+    const m = j.meta || {};
+    document.getElementById("meta").textContent = m.head
+      ? `init_task.tasks = ${m.head} · comm_delta=${m.comm_delta}${m.pid_delta != null ? ", pid_delta=" + m.pid_delta : ""}（純記憶體掃描）`
+      : "";
+    if (!j.synced) { dot.className = "dot"; txt.textContent = `尚未同步 — 請在 gdb 下 ${(j.prefix || "taskviz")} sync`; }
+    else {
+      const when = new Date(j.synced_at * 1000).toLocaleTimeString();
+      dot.className = (Date.now() / 1000 - j.synced_at > 5) ? "dot stale" : "dot live";
+      txt.textContent = `已同步 ${when}`;
+    }
+    render();
+  } catch (e) {
+    document.getElementById("dot").className = "dot";
+    document.getElementById("status-text").textContent = "無法連線到 gdb 伺服器";
+  }
+}
+
+document.getElementById("filter").value = filter;
+document.getElementById("filter").addEventListener("input", (e) => {
+  filter = e.target.value;
+  try { localStorage.setItem("taskFilter", filter); } catch (err) {}
+  render(true);
+});
+
+buildHead();
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

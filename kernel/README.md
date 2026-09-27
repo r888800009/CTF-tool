@@ -27,6 +27,7 @@ There are also memory viewers built on the same server:
 | --- | --- | --- | --- | --- | --- |
 | SLUB slab caches | `kernel/slab/` | `source kernel/slab/slab_viz.py` | `slabviz` | 8774 | every `kmem_cache`: sizes, objs/slab, per-node slab/object counts |
 | Kernel VM map | `kernel/kvmmap/` | `source kernel/kvmmap/kvmmap_viz.py` | `kvmmap` | 8775 | CR3 page tables coalesced into regions (VA/size/phys/perms/region) |
+| Task list | `kernel/task/` | `source kernel/task/task_viz.py` | `taskviz` | 8776 | processes scanned from memory: PID, comm, tasks-node address |
 
 ## Layout
 
@@ -230,6 +231,33 @@ the page tables are read as physical memory over the QEMU monitor (`monitor xp`)
 Targets x86-64 4-level paging; region boundaries follow
 `Documentation/arch/x86/x86_64/mm.rst` and tolerate KASLR (the coarse windows are
 fixed even though the bases move).
+
+## Task list (task_struct)
+
+`kernel/task/task_viz.py` scans the kernel's process list out of memory and shows
+each task's PID and comm (name), like `ps`.
+
+```gdb
+(gdb) source kernel/task/task_viz.py
+(gdb) taskviz sync
+```
+
+**Pure memory, no symbols, no guest access** — done entirely from the gdb side:
+anchor on a kernel `.text` address (`$pc`, or a kernel return address on the
+stack), read the kernel image, find init_task's `comm` string (`swapper/0`, in
+`.data`), find its `tasks` list head beside it (a pair of kernel-heap pointers
+whose comm-relative offset yields a printable name for the next task), then walk
+the `tasks` ring reading each task's comm at that offset. The `pid` field offset is
+discovered heuristically (pid == tgid, a small varied positive int for the group
+leaders on the list). Needs to be stopped in the kernel on x86-64; the result is
+cached. The `tasks node` column is a stable per-task anchor (`task_struct` base +
+the `tasks` offset).
+
+## Shared helpers
+
+`kernel/kmem.py` holds the pure-memory toolkit shared by the slab and task viewers
+— the kernel-`.text` anchor, kernel-image scan, symbol lookup, C-string reads and
+address-region tests — so no viewer re-implements them.
 
 ## Notes
 

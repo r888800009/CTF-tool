@@ -21,61 +21,27 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import importlib  # noqa: E402
 import regviz_common  # noqa: E402
+import kmem  # noqa: E402
 
-importlib.reload(regviz_common)  # pick up edits to the shared module on re-source
+importlib.reload(regviz_common)  # pick up edits to the shared modules on re-source
+importlib.reload(kmem)
 
 import gdb  # noqa: E402  (provided by the gdb Python runtime)
 
+# Shared pure-memory helpers live in kmem; alias them so call sites read the same.
+_ptr_size = kmem.ptr_size
+_read_mem = kmem.read_mem
+_sym_addr = kmem.sym_addr
+_rd_uint = kmem.rd_uint
+_rd_ptr = kmem.rd_ptr
+_rd_ptr_safe = kmem.rd_ptr_safe
+_read_cstr = kmem.read_cstr
+_looks_like_name = kmem.looks_like_name
+_is_ktext = kmem.is_ktext
+_is_kheap = kmem.is_kheap
+_text_anchor = kmem.text_anchor
+_read_image = kmem.read_image
 
-def _ptr_size():
-    try:
-        return int(gdb.parse_and_eval("sizeof(void *)"))
-    except Exception:  # noqa: BLE001
-        return 8
-
-
-def _read_mem(addr, n):
-    """Raw memory read → bytes (works from the symbol addresses alone)."""
-    return bytes(gdb.selected_inferior().read_memory(addr, n))
-
-
-def _sym_addr(name):
-    """Address of a symbol via any means gdb offers — debug info, the ELF minimal
-    symbol table (no DWARF needed), or a global symbol — or None if unknown."""
-    try:
-        return int(gdb.parse_and_eval("&" + name))
-    except gdb.error:
-        pass
-    try:
-        ms = gdb.lookup_minimal_symbol(name)
-        if ms is not None:
-            fn = getattr(ms, "value_address", None)
-            if fn:
-                a = int(fn())
-                if a:
-                    return a
-            a = int(ms.value().address)  # older gdb
-            if a:
-                return a
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        sym = gdb.lookup_global_symbol(name)
-        if sym is not None:
-            a = int(sym.value().address)
-            if a:
-                return a
-    except Exception:  # noqa: BLE001
-        pass
-    return None
-
-
-def _rd_uint(addr, n):
-    return int.from_bytes(_read_mem(addr, n), "little")
-
-
-def _rd_ptr(addr):
-    return _rd_uint(addr, _ptr_size())
 
 
 def _field_off(t, name):
@@ -206,35 +172,6 @@ _BRUTE_LIST_MAX = 768    # list-offset search bound when there is no anchor
 _BRUTE_NAME_MAX = 768    # name-offset search bound in the joint brute force
 
 
-def _rd_ptr_safe(addr):
-    try:
-        return _rd_ptr(addr)
-    except gdb.error:
-        return 0
-
-
-def _read_cstr(addr, maxlen=48):
-    if not addr:
-        return None
-    try:
-        raw = _read_mem(addr, maxlen)
-    except gdb.error:
-        return None
-    z = raw.find(b"\x00")
-    if z >= 0:
-        raw = raw[:z]
-    try:
-        return raw.decode("ascii")
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _looks_like_name(s):
-    if not s or not (1 <= len(s) <= 40):
-        return False
-    return all(c.isalnum() or c in "-_.: /" for c in s) and any(c.isalnum() for c in s)
-
-
 def _enumerate_nodes(head):
     """Ring of list_head node addresses reachable from `head`, via raw memory."""
     nodes, seen = [], set()
@@ -323,51 +260,6 @@ def _scan_caches(nodes):
 _AUTO_RANGE = 96 * 1024 * 1024    # kernel-image bytes to scan from the text anchor
 _AUTO_CHUNK = 1 * 1024 * 1024
 _AUTO_CACHE = None                # remembered {anchor_base, list_off, name_off}
-
-
-def _is_ktext(v):
-    return 0xFFFFFFFF80000000 <= v <= 0xFFFFFFFFFFFFFFFF
-
-
-def _is_kheap(v):
-    # kernel direct map / vmalloc: canonical high half, below the text window
-    return (v >> 48) == 0xFFFF and 0xFFFF800000000000 <= v < 0xFFFFFFFF80000000
-
-
-def _text_anchor():
-    """A kernel .text address to anchor the image scan: $pc if it is in the
-    kernel, else the first kernel-text value found on the stack."""
-    try:
-        pc = int(gdb.parse_and_eval("$pc"))
-        if _is_ktext(pc):
-            return pc
-    except gdb.error:
-        pass
-    try:
-        sp = int(gdb.parse_and_eval("$sp"))
-        blob = _read_mem(sp, 64 * 1024)
-    except gdb.error:
-        return None
-    ps = _ptr_size()
-    for i in range(0, len(blob) - ps, ps):
-        v = int.from_bytes(blob[i:i + ps], "little")
-        if _is_ktext(v):
-            return v
-    return None
-
-
-def _read_image(start, rng, chunk=_AUTO_CHUNK):
-    """Read up to `rng` bytes from `start`, stopping at the first unmapped gap."""
-    buf = bytearray()
-    off = 0
-    while off < rng:
-        n = min(chunk, rng - off)
-        try:
-            buf += _read_mem(start + off, n)
-        except gdb.error:
-            break
-        off += n
-    return bytes(buf)
 
 
 def _auto_discover():
