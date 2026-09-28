@@ -52,6 +52,35 @@
   table.vma td.vaddr { color: var(--accent); }
   table.vma td.pm { color: #7ee787; letter-spacing: 1px; }
   table.vma td.dim { color: var(--muted); }
+
+  /* mm_rb red-black tree (CSS ul/li node-link diagram) */
+  .rbtree { overflow-x: auto; padding: 8px 0 14px; }
+  .tree, .tree ul { position: relative; display: flex; padding-top: 16px; }
+  .tree { justify-content: flex-start; }
+  .tree ul { justify-content: center; }
+  .tree li { list-style: none; position: relative; padding: 16px 8px 0; display: flex;
+    flex-direction: column; align-items: center; }
+  /* connectors */
+  .tree li::before, .tree li::after { content: ""; position: absolute; top: 0; height: 16px;
+    border-top: 1px solid var(--border); width: 50%; }
+  .tree li::before { right: 50%; border-right: 1px solid var(--border); }
+  .tree li::after { left: 50%; }
+  .tree li:only-child::before, .tree li:only-child::after { display: none; }
+  .tree li:first-child::before, .tree li:last-child::after { border: 0; }
+  .tree li:last-child::before { border-right: 1px solid var(--border); border-radius: 0 6px 0 0; }
+  .tree li:first-child::after { border-left: 1px solid var(--border); border-radius: 6px 0 0 0; }
+  .tree > ul::before, .tree > .rb-root::before { display: none; }
+  .tree ul::before { content: ""; position: absolute; top: 0; left: 50%; height: 16px;
+    border-left: 1px solid var(--border); }
+  .rb { display: inline-flex; flex-direction: column; align-items: center; gap: 1px;
+    font-family: ui-monospace, Consolas, monospace; font-size: 11px; line-height: 1.25;
+    padding: 4px 8px; border-radius: 6px; border: 1px solid; white-space: nowrap; }
+  .rb.red { background: #3d1417; border-color: #ff7b72; color: #ffb3ad; }
+  .rb.black { background: #1b2027; border-color: #6b7684; color: #d7dee8; }
+  .rb.nil { background: transparent; border-style: dashed; border-color: #3a4150;
+    color: #4b5563; padding: 2px 6px; }
+  .rb .rb-r { font-weight: 600; }
+  .rb .rb-p { color: var(--muted); letter-spacing: 1px; }
 </style>
 </head>
 <body>
@@ -198,8 +227,10 @@ async function loadVmas(box, t) {
     if (!j.ok) { box.innerHTML = `<span class="vma-err">讀取失敗：${hvEsc(j.error || "")}</span>`; return; }
     if (j.note) { box.innerHTML = `<span class="dim">${hvEsc(j.note)}</span>`; return; }
     const vs = j.vmas || [];
-    let h = `<div class="dim" style="margin-bottom:4px">mm <span class="vma-mm">${j.mm}</span> · ${vs.length} 個 VMA</div>`;
+    let h = `<div class="dim" style="margin-bottom:4px">mm <span class="vma-mm">${j.mm}</span> · ${vs.length} 個 VMA` +
+            (j.rb ? ` · mm_rb 紅黑樹 vm_rb@${j.vm_rb_off}` : "") + `</div>`;
     if (!vs.length) { box.innerHTML = h + `<span class="dim">未掃到 VMA</span>`; return; }
+    if (j.rb) h += `<div class="rbtree"><div class="tree">${rbTree(j.rb)}</div></div>`;
     h += `<table class="vma"><thead><tr><th>vm_start</th><th>vm_end</th><th>size</th><th>perms</th><th>vm_flags</th><th>vm_area_struct</th></tr></thead><tbody>`;
     for (const v of vs) {
       h += `<tr><td class="va">${v.start}</td><td class="va">${v.end}</td>` +
@@ -209,6 +240,20 @@ async function loadVmas(box, t) {
     box.innerHTML = h + `</tbody></table>`;
   } catch (e) { box.innerHTML = `<span class="vma-err">讀取失敗：${hvEsc(String(e))}</span>`; }
 }
+
+// Render an mm_rb node as a CSS <ul>/<li> binary tree; red/black by node colour,
+// each node showing its VMA range + perms. A missing child renders as a nil leaf
+// so left/right positions stay meaningful (as in a textbook red-black tree).
+function rbNode(n) {
+  if (!n) return `<li><span class="rb nil">nil</span></li>`;
+  const rng = n.start ? `${n.start.replace(/^0x/, "")}–${(n.end || "").replace(/^0x/, "")}` : "?";
+  const label = `<span class="rb ${n.color}" title="${n.addr} ${n.perms || ""}">` +
+                `<span class="rb-r">${rng}</span><span class="rb-p">${n.perms || ""}</span></span>`;
+  const leaf = !n.left && !n.right;
+  if (leaf) return `<li>${label}</li>`;
+  return `<li>${label}<ul>${rbNode(n.left)}${rbNode(n.right)}</ul></li>`;
+}
+function rbTree(root) { return `<ul>${rbNode(root)}</ul>`; }
 
 async function poll() {
   try {

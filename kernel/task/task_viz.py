@@ -41,6 +41,8 @@ _CACHE = None  # {tasks_head, comm_delta, mm_delta}
 _MM_WIN = 0x2000           # bytes each side of a tasks node to scan for `mm`
 _VMA_MAX = 4096            # BFS object budget when walking an mm's VMAs
 _VMA_OBJ = 256             # bytes read per candidate object during the VMA walk
+_VMA_HEAD = 96             # bytes of a VMA scanned to validate/locate vm_mm
+_VMA_RB_SCAN = 160         # bytes of a VMA scanned to locate the embedded vm_rb
 _USER_TOP = 0x0000800000000000  # exclusive upper bound of the canonical user half
 
 # vm_area_struct.vm_flags bits (stable) → permission string.
@@ -154,13 +156,15 @@ def _vma_at(addr, mm, buf=None):
 
     A VMA begins with `unsigned long vm_start, vm_end` — two ascending,
     page-aligned user addresses — and holds `struct mm_struct *vm_mm` a little
-    later (offset 16 on modern kernels; a few words in on older ones). We anchor
-    on vm_mm == mm, which is extremely specific, so we need not know the exact
-    kernel version. vm_flags (r/w/x/shared) sits two words past vm_mm.
+    later: offset 16 on the 6.1+ maple-tree layout, but offset 64 on older
+    red-black-tree kernels (…vm_next, vm_prev, vm_rb, rb_subtree_gap come first).
+    We anchor on vm_mm == mm, which is extremely specific, so we need not know the
+    exact version — just scan the head for it. vm_flags (r/w/x/shared) sits two
+    words past vm_mm on both layouts (vm_mm, vm_page_prot, vm_flags).
     """
     if buf is None:
         try:
-            buf = kmem.read_mem(addr, 64)
+            buf = kmem.read_mem(addr, _VMA_HEAD)
         except gdb.error:
             return None
     start = _u64(buf, 0)
@@ -170,7 +174,7 @@ def _vma_at(addr, mm, buf=None):
     if (start | end) & 0xFFF:
         return None
     mm_off = None
-    for o in range(16, min(len(buf), 64) - 8, 8):
+    for o in range(16, min(len(buf), _VMA_HEAD) - 8, 8):
         if _u64(buf, o) == mm:
             mm_off = o
             break
@@ -223,7 +227,7 @@ def _walk_vmas(mm, budget=_VMA_MAX):
             buf = kmem.read_mem(obj, _VMA_OBJ)
         except gdb.error:
             continue
-        v = _vma_at(obj, mm, buf[:64])
+        v = _vma_at(obj, mm, buf[:_VMA_HEAD])
         if v is not None:
             vmas[obj] = v
         # Follow child/next pointers (maple-node slots, or vm_next on old kernels).
@@ -274,8 +278,88 @@ def _find_mm_delta(nodes):
     return None
 
 
+def _discover_vma_rb(bases):
+    """Offset of the embedded `struct rb_node vm_rb` inside a vm_area_struct.
+
+    Older kernels index VMAs with a red-black tree (`mm_rb`), each VMA carrying an
+    rb_node {`__rb_parent_color`, `rb_right`, `rb_left`}. The right offset is the
+    one where, for every VMA, the two child words are either NULL or point at
+    another VMA's rb_node (child_base + off), and the parent word (low bits are the
+    colour, masked off) is NULL (the root) or likewise points at a VMA's rb_node —
+    with a real number of those links present (which rules out all-zero regions and
+    the maple-tree layout, where there is no such node)."""
+    S = set(bases)
+    heads = {}
+    for b in bases:
+        try:
+            heads[b] = kmem.read_mem(b, _VMA_RB_SCAN)
+        except gdb.error:
+            pass
+    if len(heads) < 3:
+        return None
+    best_off, best_ref = None, 0
+    for o in range(0, _VMA_RB_SCAN - 24, 8):
+        ref, ok = 0, True
+        for buf in heads.values():
+            pc = _u64(buf, o) & ~3
+            r = _u64(buf, o + 8)
+            l = _u64(buf, o + 16)
+            if not ((pc == 0 or (pc - o) in S)
+                    and (r == 0 or (r - o) in S)
+                    and (l == 0 or (l - o) in S)):
+                ok = False
+                break
+            ref += (1 if pc and (pc - o) in S else 0)
+            ref += (1 if r and (r - o) in S else 0)
+            ref += (1 if l and (l - o) in S else 0)
+        if ok and ref > best_ref:
+            best_ref, best_off = ref, o
+    return best_off if best_off is not None and best_ref >= len(heads) else None
+
+
+def _rb_root(mm, vm_rb_off, bases):
+    """The root rb_node address, from `mm_rb.rb_node` — a pointer in the mm_struct
+    to some VMA's rb_node (root_base + vm_rb_off)."""
+    S = set(bases)
+    try:
+        head = kmem.read_mem(mm, 512)
+    except gdb.error:
+        return None
+    for o in range(0, len(head) - 8, 8):
+        w = _u64(head, o)
+        if w and (w - vm_rb_off) in S:
+            return w
+    return None
+
+
+def _build_rb(rbnode, vm_rb_off, fields, depth=0, seen=None):
+    """Nested {colour, VMA fields, left, right} tree from a root rb_node address."""
+    if seen is None:
+        seen = set()
+    if not rbnode or rbnode in seen or depth > 64:
+        return None
+    seen.add(rbnode)
+    try:
+        buf = kmem.read_mem(rbnode, 24)
+    except gdb.error:
+        return None
+    pc, right, left = _u64(buf, 0), _u64(buf, 8), _u64(buf, 16)
+    f = fields.get(rbnode - vm_rb_off, {})
+    return {
+        "addr": "0x%x" % (rbnode - vm_rb_off),
+        "color": "black" if (pc & 1) else "red",
+        "start": f.get("start"), "end": f.get("end"),
+        "perms": f.get("perms"), "size": f.get("size"),
+        "left": _build_rb(left, vm_rb_off, fields, depth + 1, seen),
+        "right": _build_rb(right, vm_rb_off, fields, depth + 1, seen),
+    }
+
+
 def _collect_vmas_for_node(node):
-    """VMAs for the task whose tasks-list node is `node` (runs on gdb's thread)."""
+    """VMAs for the task whose tasks-list node is `node` (runs on gdb's thread).
+
+    Returns the flat VMA list plus, when the kernel indexes VMAs with a red-black
+    tree (older kernels), the reconstructed `mm_rb` tree for drawing."""
     disc = _CACHE
     mm_delta = disc.get("mm_delta") if disc else None
     if mm_delta is None:
@@ -284,7 +368,17 @@ def _collect_vmas_for_node(node):
     if not kmem.is_kheap(mm):
         return {"mm": None, "vmas": [],
                 "note": "no mm (kernel thread, or task exited)"}
-    return {"mm": "0x%x" % mm, "vmas": _walk_vmas(mm)}
+    vmas = _walk_vmas(mm)
+    out = {"mm": "0x%x" % mm, "vmas": vmas}
+    bases = [int(v["addr"], 16) for v in vmas]
+    if len(bases) >= 3:
+        vm_rb_off = _discover_vma_rb(bases)
+        if vm_rb_off is not None:
+            root = _rb_root(mm, vm_rb_off, bases)
+            fields = {int(v["addr"], 16): v for v in vmas}
+            out["rb"] = _build_rb(root, vm_rb_off, fields) if root else None
+            out["vm_rb_off"] = "0x%x" % vm_rb_off
+    return out
 
 
 def _walk_tasks(anchor=None):

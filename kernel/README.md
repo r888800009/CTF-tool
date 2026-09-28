@@ -263,11 +263,18 @@ adjacent, equal `mm`/`active_mm` kernel-heap pointers; kernel threads have
 `mm == NULL` and simply do not vote and show no VMAs). From the `mm_struct` a
 bounded memory BFS collects every `vm_area_struct`, anchored on the extremely
 specific test that a VMA begins with an ascending, page-aligned `vm_start`/`vm_end`
-pair in the user half and holds `vm_mm` pointing back at that `mm`. This works for
-both the 6.1+ maple tree and the older `mmap` linked list, since either way the
-VMAs are reached by following kernel-heap pointers, and it decodes `vm_flags` into
-`r/w/x` plus `p`/`s` (private/shared). The VMAs for a row are fetched on demand
-(the `/vmas` endpoint) when you expand it.
+pair in the user half and holds `vm_mm` pointing back at that `mm` — the `vm_mm`
+member is located by scanning the VMA head, so both the 6.1+ maple-tree layout
+(`vm_mm` right after the range) and the older red-black-tree layout (`vm_mm` after
+`vm_next`/`vm_prev`/`vm_rb`) are handled. `vm_flags` is decoded into `r/w/x` plus
+`p`/`s` (private/shared).
+
+On the older red-black-tree kernels the viewer also **reconstructs and draws the
+`mm_rb` tree**: it finds the embedded `vm_rb` offset (the word triple whose
+children/parent point at other VMAs' rb_nodes), locates the root from
+`mm_rb.rb_node`, and walks the parent-colour/left/right links into a nested tree,
+rendered as a red/black node-link diagram of the VMA ranges. The VMAs (and the
+tree) for a row are fetched on demand (the `/vmas` endpoint) when you expand it.
 
 The page also has a **task_struct decoder**: paste a hexdump (or pull one from a
 node address with the read button) and decode named fields at adjustable offsets
