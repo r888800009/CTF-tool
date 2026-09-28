@@ -61,6 +61,8 @@ def _region(va):
         return "user"
     if va >= 0xFFFFFFFFFF600000:
         return "vsyscall"
+    if va >= 0xFFFFFFFFFF000000:
+        return "cpu_entry_area"
     if va >= 0xFFFFFFFFA0000000:
         return "modules"
     if va >= 0xFFFFFFFF80000000:
@@ -173,8 +175,11 @@ def _name_in(win, dn):
     if end < 0 or end == dn or not (2 <= end - dn <= 55):
         return None
     s = win[dn:end]
-    if all(chr(c).isalnum() or chr(c) in "_-" for c in s):
-        return s.decode("ascii", "replace")
+    # strict ASCII [0-9A-Za-z_.-] only (byte checks; chr().isalnum() is Unicode-aware
+    # and would accept high bytes, then decode to replacement chars)
+    if all(48 <= c <= 57 or 65 <= c <= 90 or 97 <= c <= 122 or c in (0x5F, 0x2E, 0x2D)
+           for c in s):
+        return s.decode("ascii")
     return None
 
 
