@@ -23,9 +23,10 @@ from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
-_VERSION = 6  # bump when this shared implementation changes so re-sourcing hot-reloads
+_VERSION = 7  # bump when this shared implementation changes so re-sourcing hot-reloads
 _HTML_PATH = Path(__file__).resolve().parent / "regviz.html"
 _CSS_PATH = Path(__file__).resolve().parent / "regviz.css"  # shared theme for every app
+_HEXVIEW_PATH = Path(__file__).resolve().parent / "hexview.js"  # shared hexdump helper
 
 
 def _primary_ip():
@@ -258,6 +259,23 @@ def _make_handler():
                 count = max(1, min(count, 512))
                 self._send(200, json.dumps(_read_phys_qwords(phys, count)).encode(),
                            "application/json")
+            elif path == "/read":
+                # On-demand *virtual* memory read (hexdump of a struct, etc.).
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    addr = int(q.get("addr", ["0"])[0], 16)
+                    count = int(q.get("count", ["256"])[0])
+                except ValueError:
+                    self._send(400, b'{"ok":false,"error":"bad params"}', "application/json")
+                    return
+                count = max(1, min(count, 8192))
+                res = call_on_main(
+                    lambda: bytes(gdb.selected_inferior().read_memory(addr, count)))
+                if res.get("ok"):
+                    body = {"ok": True, "addr": "0x%x" % addr, "hex": res["result"].hex()}
+                else:
+                    body = {"ok": False, "error": res.get("error", "read failed")}
+                self._send(200, json.dumps(body).encode(), "application/json")
             elif path in app.routes:
                 # App-specific dynamic endpoint (e.g. the slab viewer's reads).
                 q = parse_qs(urlparse(self.path).query)
@@ -425,7 +443,8 @@ def install_app(*, prefix, default_port, label, html_path,
     and their ``sync_fn`` (run on gdb's main thread by ``<prefix> sync``).
     """
     static = dict(static or {})
-    static.setdefault("/regviz.css", _CSS_PATH)  # every app shares the theme
+    static.setdefault("/regviz.css", _CSS_PATH)      # every app shares the theme
+    static.setdefault("/hexview.js", _HEXVIEW_PATH)  # and the hexdump helper
     attr = "_regviz_%s" % prefix
     prev = getattr(gdb, attr, None)
     if prev is not None and getattr(prev, "_version", 0) != _VERSION:

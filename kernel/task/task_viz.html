@@ -18,6 +18,13 @@
   table.ps td.comm, table.ps th.comm { text-align: left; color: var(--text); font-weight: 600; }
   table.ps td.node { color: var(--accent); }
   table.ps tr:hover td { background: var(--panel2); }
+  table.ps tr.task { cursor: pointer; }
+  table.ps tr.detail td { text-align: left; background: var(--bg); }
+  .dhead { color: var(--muted); font-size: 12px; margin: 4px 0; }
+  .dhead .mono { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+  .dctl { margin-left: 12px; }
+  .dctl input { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
+  .dctl .doff { width: 6em; } .dctl .dcount { width: 6em; }
 </style>
 </head>
 <body>
@@ -32,6 +39,7 @@
   </div>
   <table class="ps"><thead id="thead"></thead><tbody id="tbody"></tbody></table>
 
+<script src="/hexview.js"></script>
 <script>
 const COLS = [
   { k: "pid", label: "PID", num: true },
@@ -39,7 +47,17 @@ const COLS = [
   { k: "node", label: "tasks node", num: false },
 ];
 let tasks = [], sortCol = "pid", sortDir = 1, filter = "", lastSig = "";
+const expanded = new Set();   // task nodes whose task_struct hexdump is open
 try { const f = localStorage.getItem("taskFilter"); if (f) filter = f; } catch (e) {}
+
+function parseOff(s) {
+  s = (s || "").trim();
+  const neg = s.startsWith("-");
+  if (neg) s = s.slice(1);
+  let v;
+  try { v = BigInt(s || "0"); } catch (e) { v = 0n; }
+  return neg ? -v : v;
+}
 
 function buildHead() {
   const tr = document.createElement("tr");
@@ -73,19 +91,51 @@ function render(force) {
   const f = filter.trim().toLowerCase();
   const rows = tasks.filter((t) =>
     !f || (t.comm || "").toLowerCase().includes(f) || String(t.pid).includes(f)).sort(cmp);
-  const sig = JSON.stringify(rows) + sortCol + sortDir + f;
+  const sig = JSON.stringify(rows) + sortCol + sortDir + f + "|" + [...expanded].join(",");
   if (!force && sig === lastSig) return;
   lastSig = sig;
   const tb = document.getElementById("tbody"); tb.innerHTML = "";
   for (const t of rows) {
     const tr = document.createElement("tr");
+    tr.className = "task";
+    const tw = expanded.has(t.node) ? "▾ " : "▸ ";
     tr.innerHTML =
       `<td>${t.pid === null || t.pid === undefined ? "—" : t.pid}</td>` +
-      `<td class="comm">${(t.comm || "").replace(/</g, "&lt;") || "(anon)"}</td>` +
+      `<td class="comm">${tw}${(t.comm || "").replace(/</g, "&lt;") || "(anon)"}</td>` +
       `<td class="node">${t.node}</td>`;
+    tr.addEventListener("click", () => {
+      if (expanded.has(t.node)) expanded.delete(t.node); else expanded.add(t.node);
+      render(true);
+    });
     tb.appendChild(tr);
+    if (expanded.has(t.node)) tb.appendChild(makeDetail(t));
   }
   document.getElementById("count").textContent = `${rows.length} / ${tasks.length} tasks`;
+}
+
+function makeDetail(t) {
+  const tr = document.createElement("tr");
+  tr.className = "detail";
+  const td = document.createElement("td");
+  td.colSpan = COLS.length;
+  td.innerHTML =
+    `<div class="dhead">task_struct near tasks node <span class="mono">${t.node}</span> ` +
+    `<span class="dctl">from node <input class="doff" type="text" value="-0x100"> ` +
+    `bytes <input class="dcount" type="number" min="16" max="8192" step="16" value="1024"></span></div>` +
+    hvLegend() + `<pre class="hex">讀取中…</pre>`;
+  tr.appendChild(td);
+  const pre = td.querySelector(".hex"), off = td.querySelector(".doff"), cnt = td.querySelector(".dcount");
+  const load = () => {
+    const addr = "0x" + ((BigInt(t.node) + parseOff(off.value)) & ((1n << 64n) - 1n)).toString(16);
+    const c = Math.max(16, Math.min(8192, parseInt(cnt.value, 10) || 1024));
+    hvLoad(pre, addr, c);
+  };
+  for (const el of [off, cnt]) {
+    el.addEventListener("click", (e) => e.stopPropagation());
+    el.addEventListener("change", (e) => { e.stopPropagation(); load(); });
+  }
+  load();
+  return tr;
 }
 
 async function poll() {

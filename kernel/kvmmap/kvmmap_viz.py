@@ -228,7 +228,7 @@ def _discover_modules(mod_ranges):
         if checked > 4000:
             break
         try:
-            win = kmem.read_mem(nxt, 4096)   # struct module is large; base ptrs sit deep
+            win = kmem.read_mem(nxt, 4096)   # bounded to avoid over-reading neighbours
         except gdb.error:
             continue
         # the struct must hold a base that is actually mapped in the module region,
