@@ -22,6 +22,7 @@ helpers in kernel/kmem.py.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -36,7 +37,24 @@ importlib.reload(kmem)
 import gdb  # noqa: E402  (provided by the gdb Python runtime)
 
 _IMG_RANGE = 96 * 1024 * 1024
-_CACHE = None  # {tasks_head, comm_delta, mm_delta}
+_CACHE = None  # {tasks_head, comm_delta, mm_delta, kver}
+
+# The maple tree (VMA container since Linux 6.1) tags internal-node pointers: the
+# low byte holds (node_type << 3) | 2 and the node itself is 256-byte aligned, so
+# an enode is recovered with & ~0xff. Ordinary object pointers are only 8-aligned.
+_MAPLE_MIN = (6, 1)
+_MAPLE_TYPE = {0: "dense", 1: "leaf_64", 2: "range_64", 3: "arange_64"}
+
+
+def _child_addr(w):
+    """Kernel-heap address a container word points at, or None.
+
+    Distinguishes a maple internal-node pointer (low two bits == 0b10, whole low
+    byte is the type tag → mask ~0xff) from an ordinary 8-aligned object pointer
+    (a maple leaf entry, or an rb/list link → mask ~0x7). Object pointers are
+    always ≥8-aligned, so (w & 3) == 2 uniquely marks a maple enode."""
+    a = (w & ~0xFF) if (w & 3) == 2 else (w & ~0x7)
+    return a if kmem.is_kheap(a) else None
 
 _MM_WIN = 0x2000           # bytes each side of a tasks node to scan for `mm`
 _VMA_MAX = 4096            # BFS object budget when walking an mm's VMAs
@@ -205,9 +223,10 @@ def _walk_vmas(mm, budget=_VMA_MAX):
     unlikely; a visited set and object budget bound the walk. Pivots (plain ints)
     and page-table pointers are not kheap object pointers, so they dead-end.
 
-    Pointers are masked to 8-byte alignment before dereferencing: the maple tree
-    tags internal node pointers in their low bits (`| 2`), so an unmasked slot is
-    a misaligned address that would read garbage and hide every VMA."""
+    Every word is resolved through :func:`_child_addr`, which strips the maple
+    tree's node-type tag (masking ~0xff for tagged enodes, ~0x7 otherwise). Without
+    that, a maple internal-node pointer — tagged with (type << 3) | 2 — is a
+    misaligned address that reads garbage and hides every VMA."""
     if not kmem.is_kheap(mm):
         return []
     vmas, visited = {}, set()
@@ -215,8 +234,8 @@ def _walk_vmas(mm, budget=_VMA_MAX):
         queue = []
         head = kmem.read_mem(mm, 512)
         for o in range(0, len(head) - 8, 8):
-            p = _u64(head, o) & ~0x7
-            if kmem.is_kheap(p):
+            p = _child_addr(_u64(head, o))
+            if p is not None:
                 queue.append(p)
     except gdb.error:
         return []
@@ -234,10 +253,10 @@ def _walk_vmas(mm, budget=_VMA_MAX):
         v = _vma_at(obj, mm, buf[:_VMA_HEAD])
         if v is not None:
             vmas[obj] = v
-        # Follow child/next pointers (maple-node slots, or vm_next on old kernels).
+        # Follow child/next pointers (maple slots/enodes, or vm_next on old kernels).
         for o in range(0, len(buf) - 8, 8):
-            p = _u64(buf, o) & ~0x7
-            if kmem.is_kheap(p) and p not in visited:
+            p = _child_addr(_u64(buf, o))
+            if p is not None and p not in visited:
                 queue.append(p)
     return sorted(vmas.values(), key=lambda x: int(x["start"], 16))
 
@@ -297,8 +316,8 @@ def _mm_delta_scan(nodes, span=0x1800, budget=64, sample=6):
         except gdb.error:
             continue
         for o in range(0, len(buf) - 8, 8):
-            p = _u64(buf, o) & ~0x7
-            if kmem.is_kheap(p) and _walk_vmas(p, budget=budget):
+            p = _child_addr(_u64(buf, o))
+            if p is not None and _walk_vmas(p, budget=budget):
                 votes[o - span] += 1
     if not votes:
         return None
@@ -392,6 +411,113 @@ def _build_rb(rbnode, vm_rb_off, fields, depth=0, seen=None):
     }
 
 
+def _detect_kernel_version(anchor=None):
+    """Kernel version, auto-detected from the `Linux version …` banner in the
+    kernel image (always present in .rodata) — needs no symbols. Returns
+    {major, minor, patch, banner} or None."""
+    if anchor is None:
+        anchor = kmem.text_anchor()
+    if anchor is None:
+        return None
+    image_start = anchor & ~0x1FFFFF
+    buf = kmem.read_image(image_start, _IMG_RANGE)
+    if not buf:
+        return None
+    i = buf.find(b"Linux version ")
+    if i < 0:
+        return None
+    line = buf[i:i + 160].split(b"\x00", 1)[0].split(b"\n", 1)[0].decode("latin1", "replace")
+    m = re.match(r"Linux version (\d+)\.(\d+)\.(\d+)", line)
+    if not m:
+        return None
+    return {"major": int(m.group(1)), "minor": int(m.group(2)),
+            "patch": int(m.group(3)), "banner": line.split(" (", 1)[0]}
+
+
+def _is_maple(kver):
+    """True if this kernel indexes VMAs with a maple tree (Linux ≥ 6.1)."""
+    return bool(kver) and (kver["major"], kver["minor"]) >= _MAPLE_MIN
+
+
+def _maple_root(mm):
+    """The maple tree root enode from `mm_mt.ma_root` — a tagged internal-node
+    pointer ((w & 3) == 2) sitting in the mm_struct head."""
+    try:
+        head = kmem.read_mem(mm, 512)
+    except gdb.error:
+        return None
+    for o in range(0, len(head) - 8, 8):
+        w = _u64(head, o)
+        if (w & 3) == 2 and kmem.is_kheap(w & ~0xFF):
+            return w
+    return None
+
+
+def _build_maple(enode, fields, depth=0, seen=None):
+    """Nested maple-tree node {type, children, vmas} for drawing.
+
+    A maple node is 256 bytes, 256-aligned; the enode's low byte carries the type
+    (`(enode >> 3) & 0xf`). Word 0 is the parent (skipped); the remaining words are
+    slots holding either child enodes (tagged) or, at leaves, clean pointers to the
+    stored vm_area_structs. We keep only slots that resolve to already-validated
+    VMAs (`fields`), so pivots and stale words never masquerade as entries."""
+    if seen is None:
+        seen = set()
+    node = enode & ~0xFF
+    if not kmem.is_kheap(node) or node in seen or depth > 32:
+        return None
+    seen.add(node)
+    try:
+        buf = kmem.read_mem(node, 256)
+    except gdb.error:
+        return None
+    children, vmas = [], []
+    for o in range(8, 256, 8):  # skip word 0 (parent back-pointer)
+        w = _u64(buf, o)
+        if (w & 3) == 2 and kmem.is_kheap(w & ~0xFF):
+            c = _build_maple(w, fields, depth + 1, seen)
+            if c is not None:
+                children.append(c)
+        elif w and (w & 0x7) == 0 and w in fields:
+            vmas.append(fields[w])
+    return {
+        "addr": "0x%x" % node,
+        "type": (enode >> 3) & 0xF,
+        "type_name": _MAPLE_TYPE.get((enode >> 3) & 0xF, "?"),
+        "vmas": vmas,
+        "children": children,
+    }
+
+
+def _vma_tree(mm, bases, fields, kver):
+    """Reconstruct the VMA container as a drawable tree, choosing by kernel version:
+    a maple tree on Linux ≥ 6.1, else a red-black tree. If the version is unknown,
+    try both. Returns {"kind": "maple"|"rbtree", ...} or None."""
+    def maple():
+        root = _maple_root(mm)
+        t = _build_maple(root, fields) if root else None
+        return {"kind": "maple", "root": t} if t else None
+
+    def rbtree():
+        if len(bases) < 3:
+            return None
+        off = _discover_vma_rb(bases)
+        if off is None:
+            return None
+        r = _rb_root(mm, off, bases)
+        if r is None:
+            return None
+        return {"kind": "rbtree", "vm_rb_off": "0x%x" % off,
+                "root": _build_rb(r, off, fields)}
+
+    order = (maple, rbtree) if _is_maple(kver) else (rbtree, maple)
+    for build in order:
+        t = build()
+        if t is not None:
+            return t
+    return None
+
+
 def _mm_diag(nodes):
     """Print why mm-offset discovery came up empty (called only when it did).
 
@@ -410,8 +536,8 @@ def _mm_diag(nodes):
         kheap = walkers = adj = 0
         hits = []
         for o in range(0, len(buf) - 8, 8):
-            p = _u64(buf, o) & ~0x7
-            if not kmem.is_kheap(p):
+            p = _child_addr(_u64(buf, o))
+            if p is None:
                 continue
             kheap += 1
             if _u64(buf, o) == _u64(buf, o + 8):
@@ -429,10 +555,11 @@ def _mm_diag(nodes):
 def _collect_vmas_for_node(node):
     """VMAs for the task whose tasks-list node is `node` (runs on gdb's thread).
 
-    Returns the flat VMA list plus, when the kernel indexes VMAs with a red-black
-    tree (older kernels), the reconstructed `mm_rb` tree for drawing."""
-    disc = _CACHE
-    mm_delta = disc.get("mm_delta") if disc else None
+    Returns the flat VMA list plus the reconstructed VMA container as a drawable
+    tree — a maple tree on Linux ≥ 6.1, a red-black tree on older kernels — chosen
+    from the auto-detected kernel version."""
+    disc = _CACHE or {}
+    mm_delta = disc.get("mm_delta")
     if mm_delta is None:
         return {"mm": None, "vmas": [], "error": "mm offset not resolved — sync first"}
     mm = kmem.rd_ptr_safe(node + mm_delta)
@@ -440,15 +567,15 @@ def _collect_vmas_for_node(node):
         return {"mm": None, "vmas": [],
                 "note": "no mm (kernel thread, or task exited)"}
     vmas = _walk_vmas(mm)
-    out = {"mm": "0x%x" % mm, "vmas": vmas}
+    kver = disc.get("kver")
+    out = {"mm": "0x%x" % mm, "vmas": vmas,
+           "kver": kver["banner"] if kver else None,
+           "vma_index": "maple" if _is_maple(kver) else ("rbtree" if kver else "?")}
     bases = [int(v["addr"], 16) for v in vmas]
-    if len(bases) >= 3:
-        vm_rb_off = _discover_vma_rb(bases)
-        if vm_rb_off is not None:
-            root = _rb_root(mm, vm_rb_off, bases)
-            fields = {int(v["addr"], 16): v for v in vmas}
-            out["rb"] = _build_rb(root, vm_rb_off, fields) if root else None
-            out["vm_rb_off"] = "0x%x" % vm_rb_off
+    fields = {int(v["addr"], 16): v for v in vmas}
+    tree = _vma_tree(mm, bases, fields, kver) if bases else None
+    if tree is not None:
+        out["tree"] = tree
     return out
 
 
@@ -480,6 +607,10 @@ def _walk_tasks(anchor=None):
         nodes.append(node)
         node = kmem.rd_ptr_safe(node)
 
+    if "kver" not in disc:
+        disc["kver"] = _detect_kernel_version(anchor)
+    kver = disc["kver"]
+
     pid_delta = _find_pid_delta(nodes)
     mm_delta = disc.get("mm_delta")
     if mm_delta is None:
@@ -500,7 +631,9 @@ def _walk_tasks(anchor=None):
         })
     tasks.sort(key=lambda t: t["pid"] if t["pid"] is not None else (1 << 62))
     meta = {"comm_delta": cd, "pid_delta": pid_delta, "head": "0x%x" % head,
-            "mm_delta": mm_delta}
+            "mm_delta": mm_delta,
+            "kver": kver["banner"] if kver else None,
+            "vma_index": "maple" if _is_maple(kver) else ("rbtree" if kver else "?")}
     return tasks, meta
 
 
@@ -523,6 +656,8 @@ def _task_sync(server, args=None):
         print("[taskviz] error: %s" % exc)
         return
     server.state.set({"tasks": tasks, "meta": meta})
+    print("[taskviz] kernel %s → VMA index: %s"
+          % (meta["kver"] or "version unknown", meta["vma_index"]))
     print("[taskviz] synced %d tasks (comm_delta=%#x, pid_delta=%s, mm_delta=%s)"
           % (len(tasks), meta["comm_delta"],
              "n/a" if meta["pid_delta"] is None else "%#x" % meta["pid_delta"],

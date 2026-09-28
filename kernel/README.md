@@ -267,14 +267,27 @@ pair in the user half and holds `vm_mm` pointing back at that `mm` — the `vm_m
 member is located by scanning the VMA head, so both the 6.1+ maple-tree layout
 (`vm_mm` right after the range) and the older red-black-tree layout (`vm_mm` after
 `vm_next`/`vm_prev`/`vm_rb`) are handled. `vm_flags` is decoded into `r/w/x` plus
-`p`/`s` (private/shared).
+`p`/`s` (private/shared). Container pointers are un-tagged before dereferencing:
+the maple tree encodes a node's type in the low byte of each internal-node pointer
+(`node | (type << 3) | 2`, 256-byte aligned), so those are masked with `~0xff`
+while ordinary 8-aligned pointers use `~0x7`.
 
-On the older red-black-tree kernels the viewer also **reconstructs and draws the
-`mm_rb` tree**: it finds the embedded `vm_rb` offset (the word triple whose
-children/parent point at other VMAs' rb_nodes), locates the root from
-`mm_rb.rb_node`, and walks the parent-colour/left/right links into a nested tree,
-rendered as a red/black node-link diagram of the VMA ranges. The VMAs (and the
-tree) for a row are fetched on demand (the `/vmas` endpoint) when you expand it.
+**The kernel version is auto-detected** (from the `Linux version …` banner in the
+image, no symbols needed) and drives which VMA index the viewer reconstructs and
+**draws**:
+
+- **Linux ≥ 6.1 → the maple tree.** From `mm_mt.ma_root` it walks the maple nodes
+  (type from each enode's tag byte), collecting child enodes and, at the leaves,
+  the stored `vm_area_struct` pointers, and draws the n-ary node-link tree with the
+  leaf VMA ranges as chips.
+- **Older kernels → the red-black tree (`mm_rb`).** It finds the embedded `vm_rb`
+  offset (the word triple whose children/parent reference other VMAs' rb_nodes),
+  locates the root from `mm_rb.rb_node`, and walks the parent-colour/left/right
+  links into a red/black binary tree.
+
+If the version can't be read, both are attempted. The VMAs and the tree for a row
+are fetched on demand (the `/vmas` endpoint) when you expand it; when mm-offset
+discovery fails, `sync` prints a diagnostic explaining why.
 
 The page also has a **task_struct decoder**: paste a hexdump (or pull one from a
 node address with the read button) and decode named fields at adjustable offsets

@@ -81,6 +81,15 @@
     color: #4b5563; padding: 2px 6px; }
   .rb .rb-r { font-weight: 600; }
   .rb .rb-p { color: var(--muted); letter-spacing: 1px; }
+  .rb.leaf { background: #14232b; border-color: #39c5cf; color: #a5e6ee; }
+  /* maple-tree nodes (n-ary) */
+  .mwrap { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; }
+  .mnode { font-family: ui-monospace, Consolas, monospace; font-size: 11px; font-weight: 600;
+    padding: 3px 9px; border-radius: 6px; border: 1px solid; white-space: nowrap; }
+  .mnode.t3 { background: #1b2a17; border-color: #7ee787; color: #b6f0be; }  /* arange_64 */
+  .mnode.t2 { background: #1a2740; border-color: #7fb2ff; color: #b9d4ff; }  /* range_64 */
+  .mnode.t1, .mnode.t0 { background: #2a2140; border-color: #d2a8ff; color: #e6d4ff; }  /* leaves */
+  .mvmas { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; max-width: 340px; }
 </style>
 </head>
 <body>
@@ -227,10 +236,19 @@ async function loadVmas(box, t) {
     if (!j.ok) { box.innerHTML = `<span class="vma-err">讀取失敗：${hvEsc(j.error || "")}</span>`; return; }
     if (j.note) { box.innerHTML = `<span class="dim">${hvEsc(j.note)}</span>`; return; }
     const vs = j.vmas || [];
-    let h = `<div class="dim" style="margin-bottom:4px">mm <span class="vma-mm">${j.mm}</span> · ${vs.length} 個 VMA` +
-            (j.rb ? ` · mm_rb 紅黑樹 vm_rb@${j.vm_rb_off}` : "") + `</div>`;
+    const tree = j.tree;
+    const idx = tree ? (tree.kind === "maple" ? "maple tree" : "紅黑樹 (mm_rb)")
+                     : (j.vma_index === "maple" ? "maple tree" : j.vma_index === "rbtree" ? "紅黑樹 (mm_rb)" : "");
+    let h = `<div class="dim" style="margin-bottom:4px">` +
+            (j.kver ? `<span class="vma-mm">${hvEsc(j.kver)}</span> · ` : "") +
+            `mm <span class="vma-mm">${j.mm}</span> · ${vs.length} 個 VMA` +
+            (idx ? ` · VMA 索引：${idx}` : "") +
+            (tree && tree.kind === "rbtree" ? ` vm_rb@${tree.vm_rb_off}` : "") + `</div>`;
     if (!vs.length) { box.innerHTML = h + `<span class="dim">未掃到 VMA</span>`; return; }
-    if (j.rb) h += `<div class="rbtree"><div class="tree">${rbTree(j.rb)}</div></div>`;
+    if (tree && tree.root) {
+      const drawn = tree.kind === "maple" ? mapleTree(tree.root) : rbTree(tree.root);
+      h += `<div class="rbtree"><div class="tree">${drawn}</div></div>`;
+    }
     h += `<table class="vma"><thead><tr><th>vm_start</th><th>vm_end</th><th>size</th><th>perms</th><th>vm_flags</th><th>vm_area_struct</th></tr></thead><tbody>`;
     for (const v of vs) {
       h += `<tr><td class="va">${v.start}</td><td class="va">${v.end}</td>` +
@@ -239,6 +257,12 @@ async function loadVmas(box, t) {
     }
     box.innerHTML = h + `</tbody></table>`;
   } catch (e) { box.innerHTML = `<span class="vma-err">讀取失敗：${hvEsc(String(e))}</span>`; }
+}
+
+function vmaChip(v) {
+  const rng = v.start ? `${v.start.replace(/^0x/, "")}–${(v.end || "").replace(/^0x/, "")}` : "?";
+  return `<span class="rb leaf" title="${v.addr} ${v.perms || ""}">` +
+         `<span class="rb-r">${rng}</span><span class="rb-p">${v.perms || ""}</span></span>`;
 }
 
 // Render an mm_rb node as a CSS <ul>/<li> binary tree; red/black by node colour,
@@ -254,6 +278,18 @@ function rbNode(n) {
   return `<li>${label}<ul>${rbNode(n.left)}${rbNode(n.right)}</ul></li>`;
 }
 function rbTree(root) { return `<ul>${rbNode(root)}</ul>`; }
+
+// Render a maple-tree node (n-ary): a typed node box, its leaf VMAs as chips, and
+// its child nodes recursively — the actual 6.1+ VMA index.
+function mapleNode(n) {
+  const label = `<span class="mnode t${n.type}" title="${n.addr}">${n.type_name}</span>`;
+  const chips = (n.vmas && n.vmas.length)
+    ? `<div class="mvmas">${n.vmas.map(vmaChip).join("")}</div>` : "";
+  const kids = (n.children && n.children.length)
+    ? `<ul>${n.children.map((c) => mapleNode(c)).join("")}</ul>` : "";
+  return `<li><span class="mwrap">${label}${chips}</span>${kids}</li>`;
+}
+function mapleTree(root) { return `<ul>${mapleNode(root)}</ul>`; }
 
 async function poll() {
   try {
