@@ -221,7 +221,7 @@ def _discover_modules():
         if checked > 4000:
             break
         try:
-            win = kmem.read_mem(nxt, 320)
+            win = kmem.read_mem(nxt, 4096)   # struct module is large; base ptrs sit deep
         except gdb.error:
             continue
         if not _mod_ptrs(win, ps):
@@ -247,12 +247,12 @@ def _discover_modules():
     while node and node != head and node not in seen and len(seen) < 4096:
         seen.add(node)
         try:
-            name = _name_in(kmem.read_mem(node, name_delta + 56), name_delta)
-            around = kmem.read_mem(node - 128, 640)
+            win = kmem.read_mem(node, 4096)
         except gdb.error:
             break
+        name = _name_in(win, name_delta)
         if name:
-            for b in set(_mod_ptrs(around, ps)):
+            for b in set(_mod_ptrs(win, ps)):
                 mods.append((b, name))
         node = kmem.rd_ptr_safe(node)
     mods.sort()
@@ -277,6 +277,7 @@ def _kvmmap_sync(server, args=None):
 
     # Best-effort: label modules-region rows with their owning module name.
     global _MODS_CACHE
+    modnote = ""
     if any(it["region"] == "modules" for it in items):
         if _MODS_CACHE is None:
             _MODS_CACHE = _discover_modules()
@@ -288,11 +289,20 @@ def _kvmmap_sync(server, args=None):
                 if it["region"] == "modules":
                     i = bisect.bisect_right(bases, int(it["va"], 16)) - 1
                     it["module"] = mods[i][1] if i >= 0 else ""
+            print("[kvmmap] resolved %d module base(s)" % len(mods))
+        else:
+            modnote = ("module names unavailable — could not scan the `modules` "
+                       "list (need kernel context: kernel VAs aren't readable from "
+                       "userspace under KPTI; be stopped in the kernel)")
+            print("[kvmmap] %s" % modnote)
 
     # Keep the (already run-length-collapsed) list on the server; the 1s poll only
     # carries a small summary and the page fetches the list once per sync.
     server._kvmmap_items = items
-    server.state.set({"count": len(items), "cr3": "0x%x" % cr3})
+    state = {"count": len(items), "cr3": "0x%x" % cr3}
+    if modnote:
+        state["modnote"] = modnote
+    server.state.set(state)
     print("[kvmmap] synced %d entries from CR3=0x%x" % (len(items), cr3))
 
 
