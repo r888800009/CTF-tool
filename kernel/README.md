@@ -28,6 +28,7 @@ There are also memory viewers built on the same server:
 | SLUB slab caches | `kernel/slab/` | `source kernel/slab/slab_viz.py` | `slabviz` | 8774 | every `kmem_cache`: sizes, objs/slab, per-node slab/object counts |
 | Kernel VM map | `kernel/kvmmap/` | `source kernel/kvmmap/kvmmap_viz.py` | `kvmmap` | 8775 | CR3 page tables coalesced into regions (VA/size/phys/perms/region) |
 | Task list | `kernel/task/` | `source kernel/task/task_viz.py` | `taskviz` | 8776 | processes scanned from memory: PID, comm, tasks-node; expand to hexdump `task_struct` and follow `mm → vm_area_struct` (VMAs / maps) |
+| IDT / vsyscall | `kernel/idt/` | `source kernel/idt/idt_viz.py` | `idtviz` | 8777 | x86-64 interrupt vector table (256 gates: handler, type, DPL, IST, present) and the vsyscall page |
 
 ## Layout
 
@@ -297,6 +298,28 @@ node address with the read button) and decode named fields at adjustable offsets
 (`u8/16/32/64`, signed, `ptr` — coloured by region — and `str`). "用偵測到的
 offset 預填" seeds `comm`/`pid`/`tgid` from the offsets the sync discovered, so you
 can read one task's fields and tweak from there.
+
+## IDT / vsyscall (idtviz)
+
+`kernel/idt/idt_viz.py` shows the x86-64 **interrupt descriptor table** and the
+**vsyscall** page, with no kernel symbols:
+
+```gdb
+(gdb) source kernel/idt/idt_viz.py
+(gdb) idtviz sync
+```
+
+The IDT base/limit are taken from the authoritative IDTR, read via the QEMU
+monitor (`monitor info registers` prints `IDT= <base> <limit>`; the GDT is shown
+too), so a QEMU gdb stub is required. The table at that base (up to 256 × 16-byte
+gate descriptors) is read as memory and each gate decoded — handler address
+(coloured by region, so kernel-text handlers stand out), gate type
+(interrupt/trap), DPL, IST index and present bit — with the architectural
+exception mnemonic for vectors 0–31 (and `int 0x80`). Filter by vector/name/handler,
+hide not-present gates, or show only the named exceptions. The three vsyscall entry
+stubs (`gettimeofday`/`time`/`getcpu` at `0xffffffffff600000` + `0`/`0x400`/`0x800`)
+are read and shown; on kernels where vsyscall is emulated or off the page is
+unreadable, which the page reports.
 
 ## Navigation bar
 

@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDT / vsyscall</title>
+<link rel="stylesheet" href="/regviz.css">
+<style>
+  .wrap { max-width: 1080px; }
+  .bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; font-size: 13px; }
+  .bar input[type=text] { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; min-width: 200px; }
+  .bar label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; color: var(--muted); }
+  .meta { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+  .meta .mono { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+  .err { color: var(--warn); font-size: 13px; margin-bottom: 12px; }
+  h2 { font-size: 16px; margin: 26px 0 8px; }
+  table.idt, table.vsys { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  table.idt th, table.idt td, table.vsys th, table.vsys td {
+    border: 1px solid var(--border); padding: 4px 9px; text-align: right; white-space: nowrap; }
+  table.idt th, table.vsys th { background: var(--panel); color: var(--muted); font-weight: 600; position: sticky; top: 44px; }
+  table.idt td, table.vsys td { font-family: ui-monospace, Consolas, monospace; }
+  table.idt td.name, table.vsys td.name { text-align: left; font-family: "Segoe UI","Noto Sans TC",system-ui,sans-serif; color: var(--text); }
+  table.idt td.hand { color: var(--field-fg); }
+  table.idt tr.np { opacity: .4; }
+  .gate-intr { color: #7ee787; } .gate-trap { color: #d2a8ff; } .gate-other { color: var(--warn); }
+  .dpl3 { color: var(--warn); font-weight: 600; }
+  .ist { color: #39c5cf; }
+  .vsys-no { color: var(--warn); }
+  .vsys-yes { color: #7ee787; }
+  table.vsys td.vhex { text-align: left; color: var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>IDT / vsyscall</h1>
+  <div class="sub">x86-64 中斷向量表(IDT)與 vsyscall — 在 gdb 下 <code id="synccmd">idtviz sync</code> 更新（需 QEMU monitor 取得 IDTR）。</div>
+  <div class="status"><span class="dot" id="dot"></span><span id="status-text">尚未同步</span></div>
+  <div class="meta" id="meta"></div>
+  <div class="err" id="err" style="display:none"></div>
+
+  <div class="bar">
+    <input id="filter" type="text" placeholder="以向量號 / 名稱 / handler 過濾">
+    <label><input type="checkbox" id="hidenp"> 隱藏 not-present</label>
+    <label><input type="checkbox" id="named"> 只顯示具名例外 (0–31, 0x80)</label>
+    <span class="count" id="count"></span>
+  </div>
+  <table class="idt"><thead id="idthead"></thead><tbody id="idtbody"></tbody></table>
+
+  <h2>vsyscall <span class="sub" style="font-size:12.5px">0xffffffffff600000（emulate/none 時不可讀）</span></h2>
+  <table class="vsys"><thead><tr><th class="name">function</th><th>address</th><th>可讀</th><th class="vhex">前 16 bytes</th></tr></thead>
+    <tbody id="vsysbody"></tbody></table>
+</div>
+
+<script src="/hexview.js"></script>
+<script>
+let gates = [], vsys = [], filter = "", hideNp = false, onlyNamed = false;
+try { hideNp = localStorage.getItem("idtHideNp") === "1"; } catch (e) {}
+try { onlyNamed = localStorage.getItem("idtNamed") === "1"; } catch (e) {}
+
+const IDT_COLS = ["vec", "name", "handler", "type", "DPL", "IST", "sel", "P"];
+
+function buildHead() {
+  const tr = document.createElement("tr");
+  for (const c of IDT_COLS) {
+    const th = document.createElement("th");
+    th.textContent = c;
+    if (c === "name") th.className = "name";
+    tr.appendChild(th);
+  }
+  const h = document.getElementById("idthead"); h.innerHTML = ""; h.appendChild(tr);
+}
+
+function gateTypeClass(t) {
+  if (t === "interrupt") return "gate-intr";
+  if (t === "trap") return "gate-trap";
+  return "gate-other";
+}
+
+function renderIdt() {
+  buildHead();
+  const f = filter.trim().toLowerCase();
+  const rows = gates.filter((g) => {
+    if (hideNp && !g.present) return false;
+    if (onlyNamed && !g.name) return false;
+    if (!f) return true;
+    return String(g.vec).includes(f) || ("0x" + g.vec.toString(16)).includes(f) ||
+      (g.name || "").toLowerCase().includes(f) || g.handler.toLowerCase().includes(f);
+  });
+  const tb = document.getElementById("idtbody"); tb.innerHTML = "";
+  for (const g of rows) {
+    const tr = document.createElement("tr");
+    if (!g.present) tr.className = "np";
+    let hcls = "";
+    try { const c = hvPtrClass(BigInt(g.handler)); if (c) hcls = "ptr " + c; } catch (e) {}
+    tr.innerHTML =
+      `<td>${g.vec} <span class="hint">0x${g.vec.toString(16)}</span></td>` +
+      `<td class="name">${(g.name || "").replace(/</g, "&lt;") || "—"}</td>` +
+      `<td class="hand"><span class="${hcls}">${g.handler}</span></td>` +
+      `<td class="${gateTypeClass(g.type)}">${g.type}</td>` +
+      `<td class="${g.dpl === 3 ? "dpl3" : ""}">${g.dpl}</td>` +
+      `<td class="ist">${g.ist || "—"}</td>` +
+      `<td class="hint">${g.sel}</td>` +
+      `<td>${g.present ? "✓" : "·"}</td>`;
+    tb.appendChild(tr);
+  }
+  document.getElementById("count").textContent = `${rows.length} / ${gates.length} 向量`;
+}
+
+function renderVsys() {
+  const tb = document.getElementById("vsysbody"); tb.innerHTML = "";
+  for (const v of vsys) {
+    const tr = document.createElement("tr");
+    let hex = "—";
+    if (v.readable && v.hex) hex = v.hex.replace(/(..)/g, "$1 ").slice(0, 48).trim();
+    tr.innerHTML =
+      `<td class="name">${v.name}</td>` +
+      `<td class="hand">${v.addr}</td>` +
+      `<td class="${v.readable ? "vsys-yes" : "vsys-no"}">${v.readable ? "可讀" : "不可讀（emulate/none）"}</td>` +
+      `<td class="vhex">${hex}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/data", { cache: "no-store" });
+    const j = await r.json();
+    document.getElementById("synccmd").textContent = (j.prefix || "idtviz") + " sync";
+    const dot = document.getElementById("dot"), txt = document.getElementById("status-text");
+    const err = document.getElementById("err"), meta = document.getElementById("meta");
+    if (j.synced) {
+      dot.className = "dot live";
+      const when = new Date(j.synced_at * 1000).toLocaleTimeString();
+      txt.textContent = "已同步 " + when;
+    } else {
+      dot.className = "dot"; txt.textContent = "尚未同步（在 gdb 執行 idtviz sync）";
+    }
+    if (j.error) { err.style.display = ""; err.textContent = j.error; } else { err.style.display = "none"; }
+    if (j.idt_base) {
+      meta.innerHTML = `IDT <span class="mono">${j.idt_base}</span> limit <span class="mono">0x${(j.idt_limit || 0).toString(16)}</span>` +
+        (j.gdt_base ? ` · GDT <span class="mono">${j.gdt_base}</span> limit <span class="mono">0x${(j.gdt_limit || 0).toString(16)}</span>` : "");
+    } else meta.textContent = "";
+    gates = j.gates || [];
+    vsys = j.vsyscall || [];
+    renderIdt();
+    renderVsys();
+  } catch (e) { /* server reloading */ }
+}
+
+document.getElementById("filter").addEventListener("input", (e) => { filter = e.target.value; renderIdt(); });
+const cbNp = document.getElementById("hidenp"); cbNp.checked = hideNp;
+cbNp.addEventListener("change", (e) => {
+  hideNp = e.target.checked;
+  try { localStorage.setItem("idtHideNp", hideNp ? "1" : "0"); } catch (er) {}
+  renderIdt();
+});
+const cbNamed = document.getElementById("named"); cbNamed.checked = onlyNamed;
+cbNamed.addEventListener("change", (e) => {
+  onlyNamed = e.target.checked;
+  try { localStorage.setItem("idtNamed", onlyNamed ? "1" : "0"); } catch (er) {}
+  renderIdt();
+});
+
+poll();
+setInterval(poll, 1500);
+</script>
+</body>
+</html>
