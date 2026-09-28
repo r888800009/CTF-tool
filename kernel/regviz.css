@@ -23,6 +23,36 @@
     line-height: 1.5;
     padding: 24px 16px 80px;
   }
+
+  /* Shared cross-module navigation bar (injected via nav.js on every page). */
+  #regviz-nav {
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin: -24px -16px 20px; padding: 8px 16px;
+    background: rgba(14, 17, 22, .92); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border);
+  }
+  #regviz-nav .rvnav-brand {
+    font-size: 12px; font-weight: 700; letter-spacing: .5px;
+    color: var(--muted); text-transform: uppercase; margin-right: 4px;
+  }
+  #regviz-nav .rvnav-empty { font-size: 12.5px; color: var(--muted); }
+  #regviz-nav .rvnav-item {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    text-decoration: none; font-size: 13px;
+    padding: 4px 10px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  }
+  #regviz-nav .rvnav-item:hover { border-color: var(--accent); }
+  #regviz-nav .rvnav-item.cur {
+    border-color: var(--accent); background: var(--field-bg); color: var(--field-fg);
+    font-weight: 600; cursor: default;
+  }
+  #regviz-nav .rvnav-item .rvnav-label { }
+  #regviz-nav .rvnav-item .rvnav-port {
+    font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--muted);
+  }
+  #regviz-nav .rvnav-item.cur .rvnav-port { color: var(--field-fg); }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
   .status {

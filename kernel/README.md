@@ -298,6 +298,19 @@ node address with the read button) and decode named fields at adjustable offsets
 offset 預填" seeds `comm`/`pid`/`tgid` from the offsets the sync discovered, so you
 can read one task's fields and tweak from there.
 
+## Navigation bar
+
+Every viewer page shows a sticky **navigation bar** at the top listing all the
+regviz-family web views currently running in the same gdb process, so you can jump
+between the loaded modules (registers, page tables, slab, kvmmap, task list, …)
+with one click. It is served entirely by the shared server — each viewer stashes
+its running server as `gdb._regviz_<prefix>`, the `/nav` endpoint enumerates those,
+and the server injects the shared `kernel/nav.js` into every page automatically, so
+no per-page HTML changes are needed. Links use the browser's own hostname, so they
+work over both loopback and a LAN address, and the bar re-polls so modules you
+`source` (or `stop`) later appear or drop off. Only viewers running the current
+shared version appear, so after upgrading, re-`source` each plugin you want listed.
+
 ## Shared helpers
 
 `kernel/kmem.py` holds the pure-memory toolkit shared by the slab and task viewers

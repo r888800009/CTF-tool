@@ -23,10 +23,36 @@ from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
-_VERSION = 7  # bump when this shared implementation changes so re-sourcing hot-reloads
+_VERSION = 8  # bump when this shared implementation changes so re-sourcing hot-reloads
 _HTML_PATH = Path(__file__).resolve().parent / "regviz.html"
 _CSS_PATH = Path(__file__).resolve().parent / "regviz.css"  # shared theme for every app
 _HEXVIEW_PATH = Path(__file__).resolve().parent / "hexview.js"  # shared hexdump helper
+_NAV_PATH = Path(__file__).resolve().parent / "nav.js"  # shared cross-module nav bar
+
+
+def _running_apps():
+    """Every regviz-family web view currently running in this gdb process.
+
+    All the viewers share one gdb Python process and each stashes its running
+    server as ``gdb._regviz_<prefix>``, so enumerating those attributes yields the
+    live modules — the data behind the cross-module navigation bar. Returns a list
+    of {prefix, label, port}, sorted by port."""
+    apps = []
+    for name in list(vars(gdb)):
+        if not name.startswith("_regviz_"):
+            continue
+        obj = getattr(gdb, name, None)
+        httpd = getattr(obj, "_httpd", None)
+        if httpd is None:
+            continue
+        try:
+            port = httpd.server_address[1]
+        except Exception:  # noqa: BLE001
+            continue
+        apps.append({"prefix": getattr(obj, "prefix", name[len("_regviz_"):]),
+                     "label": getattr(obj, "label", ""), "port": port})
+    apps.sort(key=lambda a: a["port"])
+    return apps
 
 
 def _primary_ip():
@@ -235,11 +261,30 @@ def _make_handler():
             except OSError as exc:
                 self._send(500, str(exc).encode(), "text/plain; charset=utf-8")
 
+        def _send_page(self, path):
+            """Serve the main HTML page with the shared cross-module nav bar script
+            injected, so every viewer gets the navigation without editing its HTML."""
+            try:
+                html = Path(path).read_text()
+            except OSError as exc:
+                self._send(500, str(exc), "text/plain; charset=utf-8")
+                return
+            tag = '<script src="/nav.js"></script>'
+            if tag not in html:
+                if "</body>" in html:
+                    html = html.replace("</body>", tag + "\n</body>", 1)
+                else:
+                    html += "\n" + tag
+            self._send(200, html, "text/html; charset=utf-8")
+
         def do_GET(self):
             app = self.server.app
             path = self.path.split("?", 1)[0]
             if path in ("/", "/index.html"):
-                self._send_file(app.html_path, "text/html; charset=utf-8")
+                self._send_page(app.html_path)
+            elif path == "/nav":
+                body = {"apps": _running_apps(), "current": app.prefix}
+                self._send(200, json.dumps(body).encode(), "application/json")
             elif path in app.static:
                 self._send_file(app.static[path], _ctype_for(path))
             elif path == "/data":
@@ -445,6 +490,7 @@ def install_app(*, prefix, default_port, label, html_path,
     static = dict(static or {})
     static.setdefault("/regviz.css", _CSS_PATH)      # every app shares the theme
     static.setdefault("/hexview.js", _HEXVIEW_PATH)  # and the hexdump helper
+    static.setdefault("/nav.js", _NAV_PATH)          # and the cross-module nav bar
     attr = "_regviz_%s" % prefix
     prev = getattr(gdb, attr, None)
     if prev is not None and getattr(prev, "_version", 0) != _VERSION:
