@@ -40,6 +40,18 @@
   table.dec td.val { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
   table.dec .dim { color: var(--muted); }
   table.dec .rm { cursor: pointer; color: var(--warn); }
+  .vmas { margin: 10px 0 4px; }
+  .vma-body .dim { color: var(--muted); }
+  .vma-body .vma-err { color: var(--warn); }
+  .vma-mm { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+  table.vma { border-collapse: collapse; font-size: 12.5px; max-width: 760px; width: 100%; }
+  table.vma th, table.vma td { border: 1px solid var(--border); padding: 3px 10px; text-align: right; white-space: nowrap; }
+  table.vma th { background: var(--panel); color: var(--muted); font-weight: 600; }
+  table.vma td { font-family: ui-monospace, Consolas, monospace; }
+  table.vma td.va { color: var(--field-fg); }
+  table.vma td.vaddr { color: var(--accent); }
+  table.vma td.pm { color: #7ee787; letter-spacing: 1px; }
+  table.vma td.dim { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -151,7 +163,9 @@ function makeDetail(t) {
     `<div class="dhead">task_struct near tasks node <span class="mono">${t.node}</span> ` +
     `<span class="dctl">from node <input class="doff" type="text" value="-0x100"> ` +
     `bytes <input class="dcount" type="number" min="16" max="8192" step="16" value="1024"></span></div>` +
-    hvLegend() + `<pre class="hex">讀取中…</pre>`;
+    hvLegend() + `<pre class="hex">讀取中…</pre>` +
+    `<div class="vmas"><div class="dhead">mm → vm_area_struct（記憶體掃描，等同 /proc/&lt;pid&gt;/maps）</div>` +
+    `<div class="vma-body">讀取中…</div></div>`;
   tr.appendChild(td);
   const pre = td.querySelector(".hex"), off = td.querySelector(".doff"), cnt = td.querySelector(".dcount");
   const load = () => {
@@ -164,7 +178,36 @@ function makeDetail(t) {
     el.addEventListener("change", (e) => { e.stopPropagation(); load(); });
   }
   load();
+  loadVmas(td.querySelector(".vma-body"), t);
   return tr;
+}
+
+function fmtSize(n) {
+  n = Number(n);
+  if (n >= 1 << 30) return (n / (1 << 30)).toFixed(1) + "G";
+  if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + "M";
+  if (n >= 1 << 10) return (n / (1 << 10)).toFixed(0) + "K";
+  return n + "B";
+}
+
+async function loadVmas(box, t) {
+  if (!t.mm) { box.innerHTML = `<span class="dim">此 task 無 mm（kernel thread，或已結束）</span>`; return; }
+  try {
+    const r = await fetch(`/vmas?node=${encodeURIComponent(t.node)}`, { cache: "no-store" });
+    const j = await r.json();
+    if (!j.ok) { box.innerHTML = `<span class="vma-err">讀取失敗：${hvEsc(j.error || "")}</span>`; return; }
+    if (j.note) { box.innerHTML = `<span class="dim">${hvEsc(j.note)}</span>`; return; }
+    const vs = j.vmas || [];
+    let h = `<div class="dim" style="margin-bottom:4px">mm <span class="vma-mm">${j.mm}</span> · ${vs.length} 個 VMA</div>`;
+    if (!vs.length) { box.innerHTML = h + `<span class="dim">未掃到 VMA</span>`; return; }
+    h += `<table class="vma"><thead><tr><th>vm_start</th><th>vm_end</th><th>size</th><th>perms</th><th>vm_flags</th><th>vm_area_struct</th></tr></thead><tbody>`;
+    for (const v of vs) {
+      h += `<tr><td class="va">${v.start}</td><td class="va">${v.end}</td>` +
+           `<td class="sz">${fmtSize(v.size)}</td><td class="pm">${v.perms}</td>` +
+           `<td class="dim">${v.flags}</td><td class="vaddr">${v.addr}</td></tr>`;
+    }
+    box.innerHTML = h + `</tbody></table>`;
+  } catch (e) { box.innerHTML = `<span class="vma-err">讀取失敗：${hvEsc(String(e))}</span>`; }
 }
 
 async function poll() {

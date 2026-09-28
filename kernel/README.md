@@ -27,7 +27,7 @@ There are also memory viewers built on the same server:
 | --- | --- | --- | --- | --- | --- |
 | SLUB slab caches | `kernel/slab/` | `source kernel/slab/slab_viz.py` | `slabviz` | 8774 | every `kmem_cache`: sizes, objs/slab, per-node slab/object counts |
 | Kernel VM map | `kernel/kvmmap/` | `source kernel/kvmmap/kvmmap_viz.py` | `kvmmap` | 8775 | CR3 page tables coalesced into regions (VA/size/phys/perms/region) |
-| Task list | `kernel/task/` | `source kernel/task/task_viz.py` | `taskviz` | 8776 | processes scanned from memory: PID, comm, tasks-node address |
+| Task list | `kernel/task/` | `source kernel/task/task_viz.py` | `taskviz` | 8776 | processes scanned from memory: PID, comm, tasks-node; expand to hexdump `task_struct` and follow `mm → vm_area_struct` (VMAs / maps) |
 
 ## Layout
 
@@ -255,6 +255,19 @@ leaders on the list). Needs to be stopped in the kernel on x86-64; the result is
 cached. The `tasks node` column is a stable per-task anchor (`task_struct` base +
 the `tasks` offset). Click a task row to hexdump its `task_struct` (region-coloured
 pointers, adjustable offset/length).
+
+Each expanded task also follows the chain **`task_struct → mm → vm_area_struct`**
+and lists that process's VMAs, like `/proc/<pid>/maps` — again purely from memory.
+The `mm` pointer offset is discovered by voting across tasks (a user process holds
+adjacent, equal `mm`/`active_mm` kernel-heap pointers; kernel threads have
+`mm == NULL` and simply do not vote and show no VMAs). From the `mm_struct` a
+bounded memory BFS collects every `vm_area_struct`, anchored on the extremely
+specific test that a VMA begins with an ascending, page-aligned `vm_start`/`vm_end`
+pair in the user half and holds `vm_mm` pointing back at that `mm`. This works for
+both the 6.1+ maple tree and the older `mmap` linked list, since either way the
+VMAs are reached by following kernel-heap pointers, and it decodes `vm_flags` into
+`r/w/x` plus `p`/`s` (private/shared). The VMAs for a row are fetched on demand
+(the `/vmas` endpoint) when you expand it.
 
 The page also has a **task_struct decoder**: paste a hexdump (or pull one from a
 node address with the read button) and decode named fields at adjustable offsets
