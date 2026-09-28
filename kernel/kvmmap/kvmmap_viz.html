@@ -15,7 +15,9 @@
   table.vm th { background: var(--panel); position: sticky; top: 0; cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; }
   table.vm th:hover { color: var(--text); }
   table.vm td { font-family: ui-monospace, Consolas, monospace; }
-  table.vm td.region, table.vm th.region, table.vm td.perms, table.vm th.perms { text-align: left; }
+  table.vm td.region, table.vm th.region, table.vm td.perms, table.vm th.perms,
+  table.vm td.module, table.vm th.module { text-align: left; }
+  table.vm td.module { color: #d29922; }
   table.vm tr:hover td { background: var(--panel2); }
   .perms .x { color: #ff7b72; } .perms .w { color: #d29922; } .perms .u { color: #7ee787; }
   .rep { color: #d2a8ff; }
@@ -46,6 +48,7 @@ const COLS = [
   { k: "size", label: "size", num: true },
   { k: "perms", label: "perms", num: false },
   { k: "phys", label: "phys", num: false },
+  { k: "module", label: "module", num: false },
 ];
 let items = [], sortCol = "va", sortDir = 1, filter = "", lastSynced = 0, lastSig = "";
 try { const f = localStorage.getItem("kvmFilter"); if (f) filter = f; } catch (e) {}
@@ -93,7 +96,7 @@ function sizeCell(r) {
 function render(force) {
   buildHead();
   const f = filter.trim().toLowerCase();
-  const rows = items.filter((r) => !f || r.region.toLowerCase().includes(f) || r.perms.includes(f)).sort(cmp);
+  const rows = items.filter((r) => !f || r.region.toLowerCase().includes(f) || r.perms.includes(f) || (r.module || "").toLowerCase().includes(f)).sort(cmp);
   const sig = sortCol + sortDir + f + "|" + lastSynced + "|" + rows.length;
   if (!force && sig === lastSig) return;
   lastSig = sig;
@@ -104,7 +107,8 @@ function render(force) {
     tr.innerHTML =
       `<td class="region"><span class="${rgClass(r.region)}">${r.region}</span></td>` +
       `<td>${r.va}</td><td>${r.va_end}</td><td>${sizeCell(r)}</td>` +
-      `<td class="perms">${permsHtml(r.perms)}</td><td>${r.phys}</td>`;
+      `<td class="perms">${permsHtml(r.perms)}</td><td>${r.phys}</td>` +
+      `<td class="module">${(r.module || "").replace(/</g, "&lt;")}</td>`;
     frag.appendChild(tr);
   }
   tb.appendChild(frag);

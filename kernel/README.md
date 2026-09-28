@@ -222,8 +222,10 @@ reappearing at a regular VA stride, e.g. the vmemmap zero page → one `N × pag
 row instead of N identical lines). Each row shows VA start/end, size (or
 `N × page`), permissions (`r/w/x`, `u`ser vs `s`upervisor, `g`lobal) and a
 **region label** — user, kernel image, modules, direct map, vmalloc, vmemmap or
-vsyscall — coloured by area (pwntools-style). Sort by any column; filter by region
-or perms. The 1 s poll carries only a small summary; the collapsed list is fetched
+vsyscall — coloured by area (pwntools-style). Rows in the **modules** region also
+get a **module** column with the owning module's name, resolved best-effort by
+scanning the kernel `modules` list from memory (needs kernel context; blank if it
+can't be read). Sort by any column; filter by region, perms or module name. The 1 s poll carries only a small summary; the collapsed list is fetched
 once per sync.
 
 Like the slab viewer this is **pure memory, no symbols**: `CR3` is a register and

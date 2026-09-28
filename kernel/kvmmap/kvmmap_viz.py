@@ -20,8 +20,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import importlib  # noqa: E402
 import regviz_common  # noqa: E402
+import kmem  # noqa: E402
 
-importlib.reload(regviz_common)  # pick up edits to the shared module on re-source
+importlib.reload(regviz_common)  # pick up edits to the shared modules on re-source
+importlib.reload(kmem)
 
 import gdb  # noqa: E402  (provided by the gdb Python runtime)
 
@@ -151,8 +153,105 @@ def _walk(cr3):
             "page": it["page"],
             "stride": it["stride"],
             "size": it["count"] * it["page"] if repeat else va_end - it["va0"],
+            "module": "",
         })
     return out
+
+
+# ---- Best-effort module-name resolution (pure memory) ---------------------
+_MOD_MIN, _MOD_MAX = 0xFFFFFFFFC0000000, 0xFFFFFFFFFEFFFFFF
+_MOD_IMG_RANGE = 96 * 1024 * 1024
+_MODS_CACHE = None   # sorted [(base, name)]
+
+
+def _is_mod(v):
+    return _MOD_MIN <= v <= _MOD_MAX
+
+
+def _name_in(win, dn):
+    end = win.find(b"\x00", dn)
+    if end < 0 or end == dn or not (2 <= end - dn <= 55):
+        return None
+    s = win[dn:end]
+    if all(chr(c).isalnum() or chr(c) in "_-" for c in s):
+        return s.decode("ascii", "replace")
+    return None
+
+
+def _mod_ptrs(win, ps):
+    out = []
+    for o in range(0, len(win) - ps, ps):
+        v = int.from_bytes(win[o:o + ps], "little")
+        if _is_mod(v):
+            out.append(v)
+    return out
+
+
+def _discover_modules():
+    """Find the kernel `modules` list by scanning and return sorted (base, name).
+
+    Best-effort and needs kernel context (reads `struct module` by VA). Returns []
+    when it can't (userspace/KPTI, or the layout is not recognised) — names blank.
+    """
+    ps = kmem.ptr_size()
+    anchor = kmem.text_anchor()
+    if anchor is None:
+        return []
+    image_start = anchor & ~0x1FFFFF
+    buf = kmem.read_image(image_start, _MOD_IMG_RANGE)
+    if not buf:
+        return []
+
+    # Find the modules list head: a .data list_head whose next `struct module`
+    # has a printable module name at a consistent inline offset and points into
+    # the module area, and whose ring's next node matches the same name offset.
+    head = name_delta = None
+    checked = 0
+    for off in range(0, len(buf) - 2 * ps, ps):
+        nxt = int.from_bytes(buf[off:off + ps], "little")
+        prv = int.from_bytes(buf[off + ps:off + 2 * ps], "little")
+        if not (kmem.is_kheap(nxt) and kmem.is_kheap(prv) and nxt != prv):
+            continue
+        checked += 1
+        if checked > 4000:
+            break
+        try:
+            win = kmem.read_mem(nxt, 320)
+        except gdb.error:
+            continue
+        if not _mod_ptrs(win, ps):
+            continue
+        for dn in range(ps, 200):
+            if not _name_in(win, dn):
+                continue
+            nn = int.from_bytes(win[0:ps], "little")
+            try:
+                if _name_in(kmem.read_mem(nn, dn + 56), dn):
+                    head, name_delta = image_start + off, dn
+                    break
+            except gdb.error:
+                pass
+        if head is not None:
+            break
+    if head is None:
+        return []
+
+    mods = []
+    seen = set()
+    node = kmem.rd_ptr_safe(head)
+    while node and node != head and node not in seen and len(seen) < 4096:
+        seen.add(node)
+        try:
+            name = _name_in(kmem.read_mem(node, name_delta + 56), name_delta)
+            around = kmem.read_mem(node - 128, 640)
+        except gdb.error:
+            break
+        if name:
+            for b in set(_mod_ptrs(around, ps)):
+                mods.append((b, name))
+        node = kmem.rd_ptr_safe(node)
+    mods.sort()
+    return mods
 
 
 def _kvmmap_sync(server, args=None):
@@ -170,6 +269,20 @@ def _kvmmap_sync(server, args=None):
                                    "(page tables are read over `monitor xp`)?"})
         print("[kvmmap] no mappings — need a QEMU target with a monitor")
         return
+
+    # Best-effort: label modules-region rows with their owning module name.
+    global _MODS_CACHE
+    if any(it["region"] == "modules" for it in items):
+        if _MODS_CACHE is None:
+            _MODS_CACHE = _discover_modules()
+        mods = _MODS_CACHE
+        if mods:
+            import bisect
+            bases = [m[0] for m in mods]
+            for it in items:
+                if it["region"] == "modules":
+                    i = bisect.bisect_right(bases, int(it["va"], 16)) - 1
+                    it["module"] = mods[i][1] if i >= 0 else ""
 
     # Keep the (already run-length-collapsed) list on the server; the 1s poll only
     # carries a small summary and the page fetches the list once per sync.
