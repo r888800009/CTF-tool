@@ -45,10 +45,15 @@ def _u32(addr):
         return None
 
 
-def _discover():
-    """Locate init_task's `tasks` list head and the comm offset by scanning."""
+def _discover(anchor=None):
+    """Locate init_task's `tasks` list head and the comm offset by scanning.
+
+    `anchor` is a kernel address to start the image scan from (any address in the
+    kernel image/.text works — e.g. a "kernel image" row from kvmmap); when None
+    it is taken from the CPU ($pc / a kernel return address on the stack)."""
     ps = kmem.ptr_size()
-    anchor = kmem.text_anchor()
+    if anchor is None:
+        anchor = kmem.text_anchor()
     if anchor is None:
         return None
     image_start = anchor & ~0x1FFFFF
@@ -122,7 +127,7 @@ def _find_pid_delta(nodes):
     return None
 
 
-def _walk_tasks():
+def _walk_tasks(anchor=None):
     global _CACHE
     disc = _CACHE
     if disc is not None:
@@ -130,13 +135,16 @@ def _walk_tasks():
         if not kmem.looks_like_name(kmem.read_cstr(nxt + disc["comm_delta"], 16)):
             disc = None
     if disc is None:
-        disc = _discover()
+        disc = _discover(anchor)
         _CACHE = disc
     if disc is None:
         raise gdb.error(
-            "could not locate the task list by memory scan — need to be stopped in "
-            "the kernel (a kernel $pc or a kernel return address on the stack) on an "
-            "x86-64 target")
+            "could not locate the task list by memory scan. Be stopped IN THE "
+            "KERNEL (p/x $pc should be 0xffffffff8...); if you are in userspace the "
+            "kernel is not mapped in the current CR3 (KPTI), so kernel VAs can't be "
+            "read — continue+interrupt until $pc is in the kernel, or break at a "
+            "kernel address (see a 'kernel image' row in kvmmap). You can also pass "
+            "a kernel address to anchor the scan: `taskviz sync 0x<kernel_addr>`")
 
     head, cd = disc["tasks_head"], disc["comm_delta"]
     nodes = [head]
@@ -162,8 +170,15 @@ def _walk_tasks():
 
 
 def _task_sync(server, args=None):
+    anchor = None
+    for tok in (args or []):
+        try:
+            anchor = int(tok, 0)
+            print("[taskviz] using scan anchor 0x%x" % anchor)
+        except ValueError:
+            print("[taskviz] ignoring invalid address '%s'" % tok)
     try:
-        tasks, meta = _walk_tasks()
+        tasks, meta = _walk_tasks(anchor)
     except gdb.error as exc:
         server.state.set({"tasks": [], "meta": {}, "error": str(exc)})
         print("[taskviz] %s" % exc)
