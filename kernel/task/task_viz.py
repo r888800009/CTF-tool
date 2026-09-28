@@ -203,7 +203,11 @@ def _walk_vmas(mm, budget=_VMA_MAX):
     validate as VMAs of `mm` (:func:`_vma_at`). vm_start/vm_end being user,
     ascending and page-aligned with vm_mm == mm makes false positives vanishingly
     unlikely; a visited set and object budget bound the walk. Pivots (plain ints)
-    and page-table pointers are not kheap object pointers, so they dead-end."""
+    and page-table pointers are not kheap object pointers, so they dead-end.
+
+    Pointers are masked to 8-byte alignment before dereferencing: the maple tree
+    tags internal node pointers in their low bits (`| 2`), so an unmasked slot is
+    a misaligned address that would read garbage and hide every VMA."""
     if not kmem.is_kheap(mm):
         return []
     vmas, visited = {}, set()
@@ -211,7 +215,7 @@ def _walk_vmas(mm, budget=_VMA_MAX):
         queue = []
         head = kmem.read_mem(mm, 512)
         for o in range(0, len(head) - 8, 8):
-            p = _u64(head, o)
+            p = _u64(head, o) & ~0x7
             if kmem.is_kheap(p):
                 queue.append(p)
     except gdb.error:
@@ -232,20 +236,17 @@ def _walk_vmas(mm, budget=_VMA_MAX):
             vmas[obj] = v
         # Follow child/next pointers (maple-node slots, or vm_next on old kernels).
         for o in range(0, len(buf) - 8, 8):
-            p = _u64(buf, o)
+            p = _u64(buf, o) & ~0x7
             if kmem.is_kheap(p) and p not in visited:
                 queue.append(p)
     return sorted(vmas.values(), key=lambda x: int(x["start"], 16))
 
 
-def _find_mm_delta(nodes):
-    """Offset (relative to a tasks node) of the `mm` pointer, found heuristically.
-
-    task_struct holds `struct mm_struct *mm, *active_mm;` adjacently, and for a
-    user process the two are equal and point at the same kheap mm_struct (kernel
-    threads have mm == NULL, so they simply do not vote). The right offset is the
-    one where most tasks show that adjacent-equal-kheap pair AND the target really
-    walks out to at least one VMA."""
+def _mm_delta_cheap(nodes):
+    """Fast path: `mm`/`active_mm` are adjacent and, for a user process, equal and
+    both point at the same kheap mm_struct (kernel threads have mm == NULL and do
+    not vote). Pick the offset where most tasks show that adjacent-equal-kheap pair
+    and the target actually walks out to a VMA."""
     from collections import Counter
     ps = kmem.ptr_size()
     seen = Counter()
@@ -276,6 +277,42 @@ def _find_mm_delta(nodes):
         if tested and ok >= max(2, tested - 1):
             return off
     return None
+
+
+def _mm_delta_scan(nodes, span=0x1800, budget=64, sample=6):
+    """Fallback: directly vote for the offset holding a pointer that walks out to
+    VMAs, dropping the adjacent-equal assumption (which can miss, e.g. when mm and
+    active_mm differ). For a few tasks, scan the window for kheap pointers whose
+    target yields at least one VMA. A true mm's first VMA is a direct seed, so a
+    small budget suffices and non-mm pointers are abandoned quickly.
+
+    Both `mm` and `active_mm` (== mm on user tasks) validate; we keep the lower of
+    any adjacent winning pair, i.e. `mm`, so kernel threads (mm == NULL) correctly
+    show no VMAs rather than a borrowed active_mm's."""
+    from collections import Counter
+    votes = Counter()
+    for node in nodes[:sample]:
+        try:
+            buf = kmem.read_mem(node - span, 2 * span)
+        except gdb.error:
+            continue
+        for o in range(0, len(buf) - 8, 8):
+            p = _u64(buf, o) & ~0x7
+            if kmem.is_kheap(p) and _walk_vmas(p, budget=budget):
+                votes[o - span] += 1
+    if not votes:
+        return None
+    winners = {off for off, c in votes.items() if c >= 2}
+    if not winners:
+        return None
+    kept = {off for off in winners if (off - 8) not in winners}  # drop active_mm
+    return max(kept, key=lambda o: (votes[o], -o))
+
+
+def _find_mm_delta(nodes):
+    """Offset (relative to a tasks node) of the `mm` pointer. Try the fast
+    adjacent-equal heuristic, then a direct validated scan as a fallback."""
+    return _mm_delta_cheap(nodes) or _mm_delta_scan(nodes)
 
 
 def _discover_vma_rb(bases):
@@ -355,6 +392,40 @@ def _build_rb(rbnode, vm_rb_off, fields, depth=0, seen=None):
     }
 
 
+def _mm_diag(nodes):
+    """Print why mm-offset discovery came up empty (called only when it did).
+
+    For a few tasks, count the kheap pointers in the scan window and how many of
+    them walk out to at least one VMA. If none do, VMA detection itself is off for
+    this kernel (e.g. an unexpected vm_area_struct layout or address-range guess);
+    if many do but no offset is consistent, the voting is the problem."""
+    span = _MM_WIN
+    print("[taskviz] mm-scan diagnostic (why mm_delta is n/a):")
+    for node in nodes[:3]:
+        try:
+            buf = kmem.read_mem(node - span, 2 * span)
+        except gdb.error as exc:
+            print("  node 0x%x: window unreadable (%s)" % (node, exc))
+            continue
+        kheap = walkers = adj = 0
+        hits = []
+        for o in range(0, len(buf) - 8, 8):
+            p = _u64(buf, o) & ~0x7
+            if not kmem.is_kheap(p):
+                continue
+            kheap += 1
+            if _u64(buf, o) == _u64(buf, o + 8):
+                adj += 1
+            if len(hits) < 6 and _walk_vmas(p, budget=64):
+                walkers += 1
+                hits.append((o - span, p))
+        print("  node 0x%x: %d kheap ptrs, %d adjacent-equal; VMA-walkable offsets: %s"
+              % (node, kheap, adj,
+                 ", ".join("%+#x->0x%x" % (d, p) for d, p in hits) or "none"))
+    print("  (if 'none' everywhere, the vm_area_struct layout differs — send this "
+          "output; otherwise re-run `taskviz sync`.)")
+
+
 def _collect_vmas_for_node(node):
     """VMAs for the task whose tasks-list node is `node` (runs on gdb's thread).
 
@@ -414,6 +485,8 @@ def _walk_tasks(anchor=None):
     if mm_delta is None:
         mm_delta = _find_mm_delta(nodes)
         disc["mm_delta"] = mm_delta  # cache so /vmas need not rediscover
+        if mm_delta is None:
+            _mm_diag(nodes)
     tasks = []
     for node in nodes:
         pid = _u32(node + pid_delta) if pid_delta is not None else None
