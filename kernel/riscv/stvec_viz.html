@@ -14,6 +14,7 @@
   table.vec { border-collapse: collapse; width: 100%; font-size: 12.5px; }
   table.vec th, table.vec td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; vertical-align: top; }
   table.vec th { background: var(--panel); color: var(--muted); font-weight: 600; }
+  table.vec th.help { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
   table.vec td.name { white-space: nowrap; font-weight: 600; color: var(--text); }
   table.vec td.addr { font-family: ui-monospace, Consolas, monospace; white-space: nowrap; color: var(--field-fg); }
   table.vec td.tgt { font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
@@ -29,7 +30,12 @@
   <div class="status"><span class="dot" id="dot"></span><span id="status-text">尚未同步</span></div>
   <div class="meta" id="meta"></div>
   <div class="err" id="err" style="display:none"></div>
-  <table class="vec"><thead><tr><th>slot</th><th>entry</th><th>jump target</th><th>disassembly</th></tr></thead>
+  <table class="vec"><thead><tr>
+    <th class="help" title="trap 類別：Direct 模式只有一個（所有 trap）；Vectored 模式含各中斷 cause 的槽位">slot</th>
+    <th class="help" title="此 slot 的位址（Direct=BASE；Vectored 中斷=BASE + 4×cause）；點擊可反組譯">entry</th>
+    <th class="help" title="此 slot 跳往（j/jal/tail）的實際 handler；點擊可反組譯">jump target</th>
+    <th class="help" title="slot 開頭數條指令的反組譯">disassembly</th>
+  </tr></thead>
     <tbody id="body"></tbody></table>
 </div>
 

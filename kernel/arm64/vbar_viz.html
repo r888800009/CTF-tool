@@ -14,6 +14,7 @@
   table.vec { border-collapse: collapse; width: 100%; font-size: 12.5px; }
   table.vec th, table.vec td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; vertical-align: top; }
   table.vec th { background: var(--panel); color: var(--muted); font-weight: 600; }
+  table.vec th.help { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
   table.vec td.ty { white-space: nowrap; font-weight: 600; }
   table.vec td.addr, table.vec td.tgt { font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
   table.vec td.addr { color: var(--field-fg); }
@@ -70,7 +71,12 @@ function render() {
     root.appendChild(h);
     const tbl = document.createElement("table");
     tbl.className = "vec";
-    let html = "<thead><tr><th>type</th><th>entry</th><th>handler (branch target)</th><th>disassembly</th></tr></thead><tbody>";
+    let html = '<thead><tr>' +
+      '<th class="help" title="例外類型：Synchronous / IRQ / FIQ / SError">type</th>' +
+      '<th class="help" title="此向量在 VBAR_EL1 中的位址（VBAR + index×0x80）">entry</th>' +
+      '<th class="help" title="此 entry 反組譯後分支（b/bl）到的實際 handler；點擊可反組譯">handler (branch target)</th>' +
+      '<th class="help" title="entry 開頭數條指令的反組譯">disassembly</th>' +
+      '</tr></thead><tbody>';
     for (const v of rows) {
       const tgt = v.target
         ? `<span class="tgt-link" data-addr="${v.target}">${v.target}</span>`

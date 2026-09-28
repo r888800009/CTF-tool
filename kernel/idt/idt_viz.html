@@ -18,6 +18,7 @@
   table.idt th, table.idt td, table.vsys th, table.vsys td {
     border: 1px solid var(--border); padding: 4px 9px; text-align: right; white-space: nowrap; }
   table.idt th, table.vsys th { background: var(--panel); color: var(--muted); font-weight: 600; position: sticky; top: 44px; }
+  table.idt th.help { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
   table.idt td, table.vsys td { font-family: ui-monospace, Consolas, monospace; }
   table.idt td.name, table.vsys td.name { text-align: left; font-family: "Segoe UI","Noto Sans TC",system-ui,sans-serif; color: var(--text); }
   table.idt td.hand { color: var(--field-fg); }
@@ -58,13 +59,24 @@ try { hideNp = localStorage.getItem("idtHideNp") === "1"; } catch (e) {}
 try { onlyNamed = localStorage.getItem("idtNamed") === "1"; } catch (e) {}
 
 const IDT_COLS = ["vec", "name", "handler", "type", "DPL", "IST", "sel", "P"];
+const IDT_HELP = {
+  vec: "中斷向量號（十進位，括號為十六進位）",
+  name: "架構定義的例外名稱（向量 0–31），以及 int 0x80",
+  handler: "中斷處理常式位址（點擊可反組譯）",
+  type: "Gate 類型：interrupt gate 進入時自動關中斷（IF=0）；trap gate 不關",
+  DPL: "Descriptor Privilege Level：可用軟體 int 指令觸發此門的最低權限。DPL=3 代表使用者態也能觸發（例如 int3、int 0x80）",
+  IST: "Interrupt Stack Table 索引（1–7）：進入時切換到 TSS 中對應的專用中斷堆疊；0 = 不切換堆疊",
+  sel: "Segment selector：handler 的程式碼區段選擇子（通常是核心 __KERNEL_CS，如 0x10）",
+  P: "Present 位元：此門是否有效。0 = 未設定，觸發會產生 #NP",
+};
 
 function buildHead() {
   const tr = document.createElement("tr");
   for (const c of IDT_COLS) {
     const th = document.createElement("th");
     th.textContent = c;
-    if (c === "name") th.className = "name";
+    if (IDT_HELP[c]) { th.title = IDT_HELP[c]; th.classList.add("help"); }
+    if (c === "name") th.classList.add("name");
     tr.appendChild(th);
   }
   const h = document.getElementById("idthead"); h.innerHTML = ""; h.appendChild(tr);
