@@ -17,6 +17,9 @@
   table.ps td { font-family: ui-monospace, Consolas, monospace; }
   table.ps td.comm, table.ps th.comm { text-align: left; color: var(--text); font-weight: 600; }
   table.ps td.node { color: var(--accent); }
+  table.ps td.mmcell { text-align: center; }
+  .mm-yes { color: #7ee787; font-weight: 600; }
+  .mm-no { color: var(--muted); }
   table.ps tr:hover td { background: var(--panel2); }
   table.ps tr.task { cursor: pointer; }
   table.ps tr.detail td { text-align: left; background: var(--bg); }
@@ -94,7 +97,7 @@
 </head>
 <body>
   <h1>Task List</h1>
-  <div class="sub">從記憶體掃描出的 task_struct（行程）— 在 gdb 下 <code id="synccmd">taskviz sync</code> 更新。點欄位標題排序。</div>
+  <div class="sub">從記憶體掃描出的 task_struct（行程）— 在 gdb 下 <code id="synccmd">taskviz sync</code> 更新。點欄位標題排序；展開 <span class="mm-yes">user</span> 列可看 VMA 與 mm 的 VMA 樹（<span class="mm-no">kthread</span> 無 mm）。</div>
   <div class="status"><span class="dot" id="dot"></span><span id="status-text">尚未同步</span></div>
   <div class="count" id="meta" style="margin-bottom:12px"></div>
   <div class="err" id="err" style="display:none"></div>
@@ -123,6 +126,7 @@
 const COLS = [
   { k: "pid", label: "PID", num: true },
   { k: "comm", label: "comm", num: false },
+  { k: "mm", label: "mm", num: false },
   { k: "node", label: "tasks node", num: false },
 ];
 let tasks = [], sortCol = "pid", sortDir = 1, filter = "", lastSig = "", lastMeta = {};
@@ -181,6 +185,7 @@ function render(force) {
     tr.innerHTML =
       `<td>${t.pid === null || t.pid === undefined ? "—" : t.pid}</td>` +
       `<td class="comm">${tw}${(t.comm || "").replace(/</g, "&lt;") || "(anon)"}</td>` +
+      `<td class="mmcell">${t.mm ? `<span class="mm-yes">user</span>` : `<span class="mm-no">kthread</span>`}</td>` +
       `<td class="node">${t.node}</td>`;
     tr.addEventListener("click", () => {
       if (expanded.has(t.node)) expanded.delete(t.node); else expanded.add(t.node);
