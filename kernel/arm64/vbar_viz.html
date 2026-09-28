@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARM64 vectors</title>
+<link rel="stylesheet" href="/regviz.css">
+<style>
+  .wrap { max-width: 1080px; }
+  .meta { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .meta .mono { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+  .err { color: var(--warn); font-size: 13px; margin-bottom: 12px; }
+  .grp { font-size: 14px; font-weight: 700; color: #7ee787; margin: 22px 0 6px; }
+  table.vec { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  table.vec th, table.vec td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; vertical-align: top; }
+  table.vec th { background: var(--panel); color: var(--muted); font-weight: 600; }
+  table.vec td.ty { white-space: nowrap; font-weight: 600; }
+  table.vec td.addr, table.vec td.tgt { font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
+  table.vec td.addr { color: var(--field-fg); }
+  table.vec td.tgt a, table.vec td.tgt span { color: #ff7b72; }
+  pre.asm { margin: 0; font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--text); white-space: pre; }
+  pre.asm .br { color: #ff7b72; font-weight: 600; }
+  .ty-sync { color: #7fb2ff; } .ty-irq { color: #7ee787; } .ty-fiq { color: #d2a8ff; } .ty-serr { color: var(--warn); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ARM64 exception vectors</h1>
+  <div class="sub">AArch64 例外向量表（<code>VBAR_EL1</code>，x86 IDT 的對應）— 在 gdb 下 <code id="synccmd">vbarviz sync</code> 更新。arm64 無 vsyscall（改用 vDSO）。</div>
+  <div class="status"><span class="dot" id="dot"></span><span id="status-text">尚未同步</span></div>
+  <div class="meta" id="meta"></div>
+  <div class="err" id="err" style="display:none"></div>
+  <div id="groups"></div>
+</div>
+
+<script>
+let vectors = [], vbar = null, el = null;
+
+function typeClass(t) {
+  if (t.startsWith("Sync")) return "ty-sync";
+  if (t.startsWith("IRQ")) return "ty-irq";
+  if (t.startsWith("FIQ")) return "ty-fiq";
+  return "ty-serr";
+}
+
+function esc(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+function fmtAsm(lines, target) {
+  return (lines || []).map((l) => {
+    const e = esc(l);
+    return /\b(bl?|br|b\.\w+)\b/.test(l) ? `<span class="br">${e}</span>` : e;
+  }).join("\n");
+}
+
+function render() {
+  const root = document.getElementById("groups");
+  root.innerHTML = "";
+  if (!vectors.length) return;
+  // 4 groups of 4
+  for (let g = 0; g < 4; g++) {
+    const rows = vectors.filter((v) => Math.floor(v.index / 4) === g);
+    if (!rows.length) continue;
+    const h = document.createElement("div");
+    h.className = "grp";
+    h.textContent = rows[0].group;
+    root.appendChild(h);
+    const tbl = document.createElement("table");
+    tbl.className = "vec";
+    let html = "<thead><tr><th>type</th><th>entry</th><th>handler (branch target)</th><th>disassembly</th></tr></thead><tbody>";
+    for (const v of rows) {
+      const tgt = v.target
+        ? `<span>${v.target}</span>`
+        : `<span style="color:var(--muted)">（entry 內未見分支）</span>`;
+      html += `<tr>` +
+        `<td class="ty ${typeClass(v.type)}">${v.type}</td>` +
+        `<td class="addr">${v.addr}</td>` +
+        `<td class="tgt">${tgt}</td>` +
+        `<td><pre class="asm">${fmtAsm(v.asm, v.target)}</pre></td>` +
+        `</tr>`;
+    }
+    html += "</tbody>";
+    tbl.innerHTML = html;
+    root.appendChild(tbl);
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/data", { cache: "no-store" });
+    const j = await r.json();
+    document.getElementById("synccmd").textContent = (j.prefix || "vbarviz") + " sync";
+    const dot = document.getElementById("dot"), txt = document.getElementById("status-text");
+    const err = document.getElementById("err"), meta = document.getElementById("meta");
+    if (j.synced) {
+      dot.className = "dot live";
+      txt.textContent = "已同步 " + new Date(j.synced_at * 1000).toLocaleTimeString();
+    } else {
+      dot.className = "dot"; txt.textContent = "尚未同步（在 gdb 執行 vbarviz sync）";
+    }
+    if (j.error) { err.style.display = ""; err.textContent = j.error; } else { err.style.display = "none"; }
+    vbar = j.vbar || null; el = (j.current_el === undefined ? null : j.current_el);
+    meta.innerHTML = vbar
+      ? `VBAR_EL1 <span class="mono">${vbar}</span>` + (el === null ? "" : ` · 目前 <span class="mono">EL${el}</span>`)
+      : "";
+    vectors = j.vectors || [];
+    render();
+  } catch (e) { /* server reloading */ }
+}
+
+poll();
+setInterval(poll, 1500);
+</script>
+</body>
+</html>

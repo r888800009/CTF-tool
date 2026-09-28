@@ -29,6 +29,7 @@ There are also memory viewers built on the same server:
 | Kernel VM map | `kernel/kvmmap/` | `source kernel/kvmmap/kvmmap_viz.py` | `kvmmap` | 8775 | CR3 page tables coalesced into regions (VA/size/phys/perms/region) |
 | Task list | `kernel/task/` | `source kernel/task/task_viz.py` | `taskviz` | 8776 | processes scanned from memory: PID, comm, tasks-node; expand to hexdump `task_struct` and follow `mm → vm_area_struct` (VMAs / maps) |
 | IDT / vsyscall | `kernel/idt/` | `source kernel/idt/idt_viz.py` | `idtviz` | 8777 | x86-64 interrupt vector table (256 gates: handler, type, DPL, IST, present) and the vsyscall page |
+| ARM64 vectors | `kernel/arm64/` | `source kernel/arm64/vbar_viz.py` | `vbarviz` | 8778 | AArch64 exception vector table from `VBAR_EL1` (16 vectors, disassembled, with each handler branch target) |
 
 ## Layout
 
@@ -320,6 +321,25 @@ hide not-present gates, or show only the named exceptions. The three vsyscall en
 stubs (`gettimeofday`/`time`/`getcpu` at `0xffffffffff600000` + `0`/`0x400`/`0x800`)
 are read and shown; on kernels where vsyscall is emulated or off the page is
 unreadable, which the page reports.
+
+## ARM64 exception vectors (vbarviz)
+
+`kernel/arm64/vbar_viz.py` is the AArch64 counterpart of idtviz. ARM64 has no IDT
+and no vsyscall page (it uses a vDSO), so the equivalent is the **exception vector
+table** at `VBAR_EL1`:
+
+```gdb
+(gdb) source kernel/arm64/vbar_viz.py
+(gdb) vbarviz sync
+```
+
+`VBAR_EL1` is read straight from the target's system registers (so an AArch64 gdb
+that exposes them — e.g. a QEMU stub — is needed; the current EL is shown too). The
+table is 16 entries of 0x80 bytes each, in four groups (Current EL with SP0 /
+Current EL with SPx / Lower EL AArch64 / Lower EL AArch32), each with the four
+exception types (Synchronous / IRQ / FIQ / SError). Unlike the x86 IDT the entries
+are *code*, so the viewer disassembles each entry and pulls out the handler it
+branches to.
 
 ## Navigation bar
 

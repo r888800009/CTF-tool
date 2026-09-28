@@ -67,10 +67,13 @@ def _parse_dtr(name, text):
 
 
 def _read_virt(addr, count):
-    """Read `count` bytes of virtual memory on gdb's main thread, or None."""
-    res = regviz_common.call_on_main(
-        lambda: bytes(gdb.selected_inferior().read_memory(addr, count)))
-    return res["result"] if res.get("ok") else None
+    """Read `count` bytes of virtual memory, or None. `sync` already runs on gdb's
+    main thread, so call the API directly — marshalling via post_event here would
+    deadlock (the main thread would be blocked waiting for its own event)."""
+    try:
+        return bytes(gdb.selected_inferior().read_memory(addr, count))
+    except gdb.error:
+        return None
 
 
 def _decode_idt(data):
@@ -114,14 +117,17 @@ def _read_vsyscall():
 
 
 def _idt_sync(server, args=None):
-    reg = regviz_common._run_on_main("monitor info registers")
-    if not reg.get("ok"):
+    # `sync` runs on gdb's main thread, so call gdb directly (no post_event, which
+    # would deadlock waiting for the main thread that is blocked here).
+    try:
+        text = gdb.execute("monitor info registers", from_tty=False, to_string=True) or ""
+    except gdb.error as exc:
         server.state.set({"error":
             "could not read the IDTR via `monitor info registers` (%s) — this needs "
-            "a QEMU gdb stub with a monitor" % reg.get("error", "no monitor")})
-        print("[idtviz] %s" % reg.get("error", "monitor unavailable"))
+            "a QEMU gdb stub with a monitor" % exc})
+        print("[idtviz] %s" % exc)
         return
-    base, limit = _parse_dtr("IDT", reg.get("output", ""))
+    base, limit = _parse_dtr("IDT", text)
     if base is None:
         server.state.set({"error": "no `IDT=` line in `monitor info registers` output"})
         print("[idtviz] could not find the IDT register in the monitor output")
@@ -137,7 +143,7 @@ def _idt_sync(server, args=None):
         print("[idtviz] IDT base 0x%x unreadable" % base)
         return
     gates = _decode_idt(data)
-    gbase, glimit = _parse_dtr("GDT", reg.get("output", ""))
+    gbase, glimit = _parse_dtr("GDT", text)
     server.state.set({
         "idt_base": "0x%x" % base, "idt_limit": limit,
         "gdt_base": None if gbase is None else "0x%x" % gbase, "gdt_limit": glimit,
