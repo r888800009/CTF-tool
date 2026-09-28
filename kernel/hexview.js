@@ -56,6 +56,54 @@ async function hvLoad(pre, addr, count) {
   } catch (e) { pre.textContent = "讀取失敗：" + e; }
 }
 
+// Fetch a disassembly of `count` instructions at `addr` (a "0x..." string) over
+// the shared /disas endpoint and render it into the <pre> element `pre`. Used by
+// the interrupt/exception vector viewers to open a handler on click.
+async function hvDisas(pre, addr, count) {
+  pre.textContent = "反組譯中…";
+  try {
+    const r = await fetch(`/disas?addr=${addr.replace(/^0x/, "")}&count=${count || 24}`,
+                          { cache: "no-store" });
+    const j = await r.json();
+    pre.textContent = j.ok ? (j.text || "(無輸出)") : ("反組譯失敗：" + (j.error || ""));
+  } catch (e) { pre.textContent = "反組譯失敗：" + e; }
+}
+
+// Wire a clickable address element `el` so clicking it toggles an inline
+// disassembly at `addr`. Inside a table it opens a full-width detail row (so the
+// disassembly is flush left, not squeezed into one column); elsewhere it inserts a
+// <pre> right after the element.
+function hvDisasToggle(el, addr) {
+  el.classList.add("disas-link");
+  el.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const row = el.closest("tr");
+    if (row) {
+      if (row._disasRow) { row._disasRow.remove(); row._disasRow = null; return; }
+      const dt = document.createElement("tr");
+      dt.className = "disas-row";
+      const td = document.createElement("td");
+      td.colSpan = row.children.length;
+      td.style.textAlign = "left";
+      const pre = document.createElement("pre");
+      pre.className = "hex disas-out";
+      td.appendChild(pre);
+      dt.appendChild(td);
+      row.parentNode.insertBefore(dt, row.nextSibling);
+      row._disasRow = dt;
+      hvDisas(pre, addr, 24);
+    } else {
+      let pre = el._disasPre;
+      if (pre && pre.parentNode) { pre.remove(); el._disasPre = null; return; }
+      pre = document.createElement("pre");
+      pre.className = "hex disas-out";
+      el.parentNode.insertBefore(pre, el.nextSibling);
+      el._disasPre = pre;
+      hvDisas(pre, addr, 24);
+    }
+  });
+}
+
 // A colour legend row (HTML string) for the regions hvPtrClass distinguishes.
 function hvLegend() {
   const items = [["ktext", "image"], ["kmod", "modules"], ["kheap", "direct-map"],

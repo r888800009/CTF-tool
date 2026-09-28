@@ -178,3 +178,11 @@
 .leg .kvmalloc { color: #d2a8ff; } .leg .kvmemmap { color: #39c5cf; } .leg .kcpu { color: #f778ba; }
 .leg .kvsys { color: #8a94a3; } .leg .user { color: #7ee787; }
 pre.hex { margin: 4px 0 10px; font-size: 12px; color: var(--text); white-space: pre; overflow-x: auto; font-family: ui-monospace, Consolas, monospace; }
+/* Clickable address that opens an inline disassembly (hvDisasToggle in hexview.js). */
+.disas-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.disas-link:hover { filter: brightness(1.25); }
+pre.disas-out { margin: 4px 0 8px; padding: 8px 10px; font-size: 12px; white-space: pre;
+  overflow-x: auto; font-family: ui-monospace, Consolas, monospace; color: var(--text);
+  text-align: left; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; }
+/* full-width disassembly detail row inside a viewer table (flush left) */
+tr.disas-row td { text-align: left; background: var(--bg); padding: 6px 10px; }

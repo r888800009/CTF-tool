@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
-_VERSION = 8  # bump when this shared implementation changes so re-sourcing hot-reloads
+_VERSION = 9  # bump when this shared implementation changes so re-sourcing hot-reloads
 _HTML_PATH = Path(__file__).resolve().parent / "regviz.html"
 _CSS_PATH = Path(__file__).resolve().parent / "regviz.css"  # shared theme for every app
 _HEXVIEW_PATH = Path(__file__).resolve().parent / "hexview.js"  # shared hexdump helper
@@ -320,6 +320,23 @@ def _make_handler():
                     body = {"ok": True, "addr": "0x%x" % addr, "hex": res["result"].hex()}
                 else:
                     body = {"ok": False, "error": res.get("error", "read failed")}
+                self._send(200, json.dumps(body).encode(), "application/json")
+            elif path == "/disas":
+                # On-demand disassembly of `count` instructions at `addr` (used by
+                # the interrupt/exception vector viewers to open a handler).
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    addr = int(q.get("addr", ["0"])[0], 16)
+                    count = int(q.get("count", ["24"])[0])
+                except ValueError:
+                    self._send(400, b'{"ok":false,"error":"bad params"}', "application/json")
+                    return
+                count = max(1, min(count, 256))
+                res = _run_on_main("x/%di 0x%x" % (count, addr))
+                if res.get("ok"):
+                    body = {"ok": True, "addr": "0x%x" % addr, "text": res.get("output", "")}
+                else:
+                    body = {"ok": False, "error": res.get("error", "disassembly failed")}
                 self._send(200, json.dumps(body).encode(), "application/json")
             elif path in app.routes:
                 # App-specific dynamic endpoint (e.g. the slab viewer's reads).

@@ -33,8 +33,9 @@
   <div id="groups"></div>
 </div>
 
+<script src="/hexview.js"></script>
 <script>
-let vectors = [], vbar = null, el = null;
+let vectors = [], vbar = null, el = null, vecSig = "";
 
 function typeClass(t) {
   if (t.startsWith("Sync")) return "ty-sync";
@@ -53,6 +54,9 @@ function fmtAsm(lines, target) {
 }
 
 function render() {
+  const sig = JSON.stringify(vectors);
+  if (sig === vecSig) return;  // avoid wiping opened disassembly each poll
+  vecSig = sig;
   const root = document.getElementById("groups");
   root.innerHTML = "";
   if (!vectors.length) return;
@@ -69,7 +73,7 @@ function render() {
     let html = "<thead><tr><th>type</th><th>entry</th><th>handler (branch target)</th><th>disassembly</th></tr></thead><tbody>";
     for (const v of rows) {
       const tgt = v.target
-        ? `<span>${v.target}</span>`
+        ? `<span class="tgt-link" data-addr="${v.target}">${v.target}</span>`
         : `<span style="color:var(--muted)">（entry 內未見分支）</span>`;
       html += `<tr>` +
         `<td class="ty ${typeClass(v.type)}">${v.type}</td>` +
@@ -81,6 +85,8 @@ function render() {
     html += "</tbody>";
     tbl.innerHTML = html;
     root.appendChild(tbl);
+    // Click a branch target to disassemble that handler inline.
+    tbl.querySelectorAll(".tgt-link").forEach((s) => hvDisasToggle(s, s.dataset.addr));
   }
 }
 

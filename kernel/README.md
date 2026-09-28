@@ -30,6 +30,7 @@ There are also memory viewers built on the same server:
 | Task list | `kernel/task/` | `source kernel/task/task_viz.py` | `taskviz` | 8776 | processes scanned from memory: PID, comm, tasks-node; expand to hexdump `task_struct` and follow `mm → vm_area_struct` (VMAs / maps) |
 | IDT / vsyscall | `kernel/idt/` | `source kernel/idt/idt_viz.py` | `idtviz` | 8777 | x86-64 interrupt vector table (256 gates: handler, type, DPL, IST, present) and the vsyscall page |
 | ARM64 vectors | `kernel/arm64/` | `source kernel/arm64/vbar_viz.py` | `vbarviz` | 8778 | AArch64 exception vector table from `VBAR_EL1` (16 vectors, disassembled, with each handler branch target) |
+| RISC-V trap vector | `kernel/riscv/` | `source kernel/riscv/stvec_viz.py` | `stvecviz` | 8779 | S-mode trap entry from `stvec` (BASE + Direct/Vectored mode; handler slots disassembled) |
 
 ## Layout
 
@@ -340,6 +341,29 @@ Current EL with SPx / Lower EL AArch64 / Lower EL AArch32), each with the four
 exception types (Synchronous / IRQ / FIQ / SError). Unlike the x86 IDT the entries
 are *code*, so the viewer disassembles each entry and pulls out the handler it
 branches to.
+
+## RISC-V trap vector (stvecviz)
+
+`kernel/riscv/stvec_viz.py` is the RISC-V counterpart. Linux runs in S-mode, whose
+trap entry point is the `stvec` CSR:
+
+```gdb
+(gdb) source kernel/riscv/stvec_viz.py
+(gdb) stvecviz sync
+```
+
+`stvec` packs a BASE address and a MODE: **Direct** (every trap enters at BASE) or
+**Vectored** (exceptions at BASE, interrupt `cause` at BASE + 4×cause). The viewer
+reads `stvec` (plus `scause`/`sepc` for context), shows BASE/MODE, and disassembles
+the handler slot(s) — the single BASE handler in Direct mode, or the per-interrupt
+jump-table slots in Vectored mode — extracting the handler each slot jumps to.
+
+## Opening a handler
+
+In all three vector viewers (idtviz / vbarviz / stvecviz) every handler / branch
+target / entry address is a clickable link: clicking it opens an inline
+disassembly of that address (a full-width row, flush left) via the shared `/disas`
+endpoint; clicking again closes it.
 
 ## Navigation bar
 

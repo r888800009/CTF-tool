@@ -53,7 +53,7 @@
 
 <script src="/hexview.js"></script>
 <script>
-let gates = [], vsys = [], filter = "", hideNp = false, onlyNamed = false;
+let gates = [], vsys = [], filter = "", hideNp = false, onlyNamed = false, idtSig = "";
 try { hideNp = localStorage.getItem("idtHideNp") === "1"; } catch (e) {}
 try { onlyNamed = localStorage.getItem("idtNamed") === "1"; } catch (e) {}
 
@@ -76,7 +76,10 @@ function gateTypeClass(t) {
   return "gate-other";
 }
 
-function renderIdt() {
+function renderIdt(force) {
+  const sig = JSON.stringify(gates) + "|" + filter + "|" + hideNp + "|" + onlyNamed;
+  if (!force && sig === idtSig) return;  // avoid wiping opened disassembly each poll
+  idtSig = sig;
   buildHead();
   const f = filter.trim().toLowerCase();
   const rows = gates.filter((g) => {
@@ -95,13 +98,14 @@ function renderIdt() {
     tr.innerHTML =
       `<td>${g.vec} <span class="hint">0x${g.vec.toString(16)}</span></td>` +
       `<td class="name">${(g.name || "").replace(/</g, "&lt;") || "—"}</td>` +
-      `<td class="hand"><span class="${hcls}">${g.handler}</span></td>` +
+      `<td class="hand"><span class="h-addr ${hcls}">${g.handler}</span></td>` +
       `<td class="${gateTypeClass(g.type)}">${g.type}</td>` +
       `<td class="${g.dpl === 3 ? "dpl3" : ""}">${g.dpl}</td>` +
       `<td class="ist">${g.ist || "—"}</td>` +
       `<td class="hint">${g.sel}</td>` +
       `<td>${g.present ? "✓" : "·"}</td>`;
     tb.appendChild(tr);
+    if (g.handler !== "0x0") hvDisasToggle(tr.querySelector(".h-addr"), g.handler);
   }
   document.getElementById("count").textContent = `${rows.length} / ${gates.length} 向量`;
 }
