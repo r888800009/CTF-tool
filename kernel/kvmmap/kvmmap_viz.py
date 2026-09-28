@@ -192,12 +192,18 @@ def _mod_ptrs(win, ps):
     return out
 
 
-def _discover_modules():
+def _discover_modules(mod_ranges):
     """Find the kernel `modules` list by scanning and return sorted (base, name).
 
+    `mod_ranges` is the list of actually-mapped module VA ranges (from the CR3
+    walk); a candidate is only accepted when a `struct module` base falls inside
+    one, which rejects other .data lists that happen to hold module-area pointers.
     Best-effort and needs kernel context (reads `struct module` by VA). Returns []
-    when it can't (userspace/KPTI, or the layout is not recognised) — names blank.
+    when it can't (userspace/KPTI, or the layout is not recognised).
     """
+    def in_r(v):
+        return any(lo <= v < hi for lo, hi in mod_ranges)
+
     ps = kmem.ptr_size()
     anchor = kmem.text_anchor()
     if anchor is None:
@@ -215,7 +221,8 @@ def _discover_modules():
     for off in range(0, len(buf) - 2 * ps, ps):
         nxt = int.from_bytes(buf[off:off + ps], "little")
         prv = int.from_bytes(buf[off + ps:off + 2 * ps], "little")
-        if not (kmem.is_kheap(nxt) and kmem.is_kheap(prv) and nxt != prv):
+        # both point into the kernel heap (a single-module list has next == prev)
+        if not (kmem.is_kheap(nxt) and kmem.is_kheap(prv)):
             continue
         checked += 1
         if checked > 4000:
@@ -224,19 +231,40 @@ def _discover_modules():
             win = kmem.read_mem(nxt, 4096)   # struct module is large; base ptrs sit deep
         except gdb.error:
             continue
-        if not _mod_ptrs(win, ps):
+        # the struct must hold a base that is actually mapped in the module region,
+        # else this is some other .data list that merely contains module-area pointers
+        if not any(in_r(p) for p in _mod_ptrs(win, ps)):
             continue
+        head_addr = image_start + off
+        nn = int.from_bytes(win[0:ps], "little")  # first module's list node (or head, if 1 module)
+        # Pick the inline-name offset; confirm with a second module when the list
+        # has more than one (a single-module ring points straight back to the head).
+        dn_pick = None
         for dn in range(ps, 200):
             if not _name_in(win, dn):
                 continue
-            nn = int.from_bytes(win[0:ps], "little")
+            if nn == head_addr:
+                dn_pick = dn
+                break
             try:
                 if _name_in(kmem.read_mem(nn, dn + 56), dn):
-                    head, name_delta = image_start + off, dn
+                    dn_pick = dn
                     break
             except gdb.error:
                 pass
-        if head is not None:
+            if dn_pick is None:
+                dn_pick = dn  # fallback if no second module confirms
+        if dn_pick is None:
+            continue
+        # Verify the ring closes back to the head (guards against false matches).
+        node, ok, steps = nn, (nn == head_addr), 0
+        while not ok and kmem.is_kheap(node) and steps < 8192:
+            node = kmem.rd_ptr_safe(node)
+            steps += 1
+            if node == head_addr:
+                ok = True
+        if ok:
+            head, name_delta = head_addr, dn_pick
             break
     if head is None:
         return []
@@ -253,7 +281,8 @@ def _discover_modules():
         name = _name_in(win, name_delta)
         if name:
             for b in set(_mod_ptrs(win, ps)):
-                mods.append((b, name))
+                if in_r(b):                 # keep only bases that are actually mapped
+                    mods.append((b, name))
         node = kmem.rd_ptr_safe(node)
     mods.sort()
     return mods
@@ -280,7 +309,9 @@ def _kvmmap_sync(server, args=None):
     modnote = ""
     if any(it["region"] == "modules" for it in items):
         if _MODS_CACHE is None:
-            _MODS_CACHE = _discover_modules()
+            mod_ranges = [(int(it["va"], 16), int(it["va_end"], 16))
+                          for it in items if it["region"] == "modules"]
+            _MODS_CACHE = _discover_modules(mod_ranges)
         mods = _MODS_CACHE
         if mods:
             import bisect
@@ -289,7 +320,14 @@ def _kvmmap_sync(server, args=None):
                 if it["region"] == "modules":
                     i = bisect.bisect_right(bases, int(it["va"], 16)) - 1
                     it["module"] = mods[i][1] if i >= 0 else ""
-            print("[kvmmap] resolved %d module base(s)" % len(mods))
+            from collections import defaultdict
+            byname = defaultdict(list)
+            for b, n in mods:
+                byname[n].append(b)
+            print("[kvmmap] resolved %d base(s) across %d module name(s):"
+                  % (len(mods), len(byname)))
+            for n in list(byname)[:30]:
+                print("[kvmmap]   %s: %s" % (n, ", ".join("0x%x" % b for b in sorted(byname[n]))))
         else:
             modnote = ("module names unavailable — could not scan the `modules` "
                        "list (need kernel context: kernel VAs aren't readable from "
