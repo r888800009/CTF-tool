@@ -25,6 +25,21 @@
   .dctl { margin-left: 12px; }
   .dctl input { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
   .dctl .doff { width: 6em; } .dctl .dcount { width: 6em; }
+  .dec-h { margin-top: 28px; font-size: 16px; }
+  .dec-hint { color: var(--muted); font-size: 12.5px; margin-bottom: 8px; }
+  .dec-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; margin-bottom: 8px; }
+  .dec-bar .sep { color: var(--border); }
+  .dec-bar input, .dec-bar button, textarea#dec-hex, table.dec input, table.dec select, #dec-add {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 13px; font-family: ui-monospace, Consolas, monospace; }
+  .dec-bar #dec-base { width: 16em; } .dec-bar #dec-addr { width: 14em; } .dec-bar #dec-count { width: 6em; }
+  .dec-bar button, #dec-add { cursor: pointer; font-family: inherit; }
+  textarea#dec-hex { width: 100%; max-width: 1180px; margin-bottom: 8px; box-sizing: border-box; }
+  table.dec { border-collapse: collapse; max-width: 1180px; width: 100%; font-size: 12.5px; margin-bottom: 8px; }
+  table.dec th, table.dec td { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
+  table.dec input.fname { width: 12em; } table.dec input.foff { width: 7em; }
+  table.dec td.val { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+  table.dec .dim { color: var(--muted); }
+  table.dec .rm { cursor: pointer; color: var(--warn); }
 </style>
 </head>
 <body>
@@ -39,6 +54,20 @@
   </div>
   <table class="ps"><thead id="thead"></thead><tbody id="tbody"></tbody></table>
 
+  <h2 class="dec-h">task_struct 解析器（前端解值，offset 可調）</h2>
+  <div class="dec-hint" id="dec-hint"></div>
+  <div class="dec-bar">
+    <label>base（offset 0 的位址）<input id="dec-base" type="text" value="0"></label>
+    <span class="sep">|</span>
+    <label>從記憶體讀取 addr <input id="dec-addr" type="text" placeholder="0xffff…（可填某列的 tasks node）"></label>
+    <label>bytes <input id="dec-count" type="number" value="1024" min="16" max="8192"></label>
+    <button id="dec-read">讀取</button>
+    <button id="dec-fill">用偵測到的 offset 預填</button>
+  </div>
+  <textarea id="dec-hex" rows="5" placeholder="貼上 task_struct 的 hex（支援 hexdump / xxd / 0x.. / 連續 hex），或用上面的『讀取』從記憶體抓"></textarea>
+  <table class="dec"><thead><tr><th>欄位</th><th>offset</th><th>type</th><th>value</th><th></th></tr></thead><tbody id="dec-body"></tbody></table>
+  <button id="dec-add">+ 欄位</button>
+
 <script src="/hexview.js"></script>
 <script>
 const COLS = [
@@ -46,7 +75,7 @@ const COLS = [
   { k: "comm", label: "comm", num: false },
   { k: "node", label: "tasks node", num: false },
 ];
-let tasks = [], sortCol = "pid", sortDir = 1, filter = "", lastSig = "";
+let tasks = [], sortCol = "pid", sortDir = 1, filter = "", lastSig = "", lastMeta = {};
 const expanded = new Set();   // task nodes whose task_struct hexdump is open
 try { const f = localStorage.getItem("taskFilter"); if (f) filter = f; } catch (e) {}
 
@@ -148,9 +177,15 @@ async function poll() {
     if (j.error) { err.style.display = "block"; err.textContent = "讀取錯誤：" + j.error; }
     else { err.style.display = "none"; }
     const m = j.meta || {};
+    lastMeta = m;
     document.getElementById("meta").textContent = m.head
       ? `init_task.tasks = ${m.head} · comm_delta=${m.comm_delta}${m.pid_delta != null ? ", pid_delta=" + m.pid_delta : ""}（純記憶體掃描）`
       : "";
+    const dh = document.getElementById("dec-hint");
+    if (dh) dh.textContent = m.head
+      ? `提示：把某列的 tasks node 位址填入下方「讀取 addr」→ 讀取 → 按「用偵測到的 offset 預填」；`
+        + `本次 comm_delta=${m.comm_delta}, pid_delta=${m.pid_delta}（皆相對 tasks node）。`
+      : "貼上 task_struct 的 hex（或用「讀取」從記憶體抓），offset 相對於 base。";
     if (!j.synced) { dot.className = "dot"; txt.textContent = `尚未同步 — 請在 gdb 下 ${(j.prefix || "taskviz")} sync`; }
     else {
       const when = new Date(j.synced_at * 1000).toLocaleTimeString();
@@ -171,7 +206,135 @@ document.getElementById("filter").addEventListener("input", (e) => {
   render(true);
 });
 
+// ---- front-end task_struct decoder ---------------------------------------
+const DEC_TYPES = ["u64", "u32", "u16", "u8", "s64", "s32", "ptr", "str"];
+const DEC_READPAD = 0x800n;   // read this far before `addr` so negative offsets resolve
+let decBytes = [], bufBaseVA = 0n;
+let decFields = [
+  { name: "tasks.next", off: "0x0", type: "ptr" },
+  { name: "tasks.prev", off: "0x8", type: "ptr" },
+  { name: "comm", off: "0x0", type: "str" },
+  { name: "pid", off: "0x0", type: "u32" },
+  { name: "tgid", off: "0x4", type: "u32" },
+];
+try { const s = localStorage.getItem("decFields"); if (s) decFields = JSON.parse(s); } catch (e) {}
+
+function decRefVA() { try { return BigInt(document.getElementById("dec-base").value.trim() || "0"); } catch (e) { return 0n; } }
+function decSave() { try { localStorage.setItem("decFields", JSON.stringify(decFields)); } catch (e) {} }
+function decParseOff(s) {
+  s = (s || "").trim(); const neg = s.startsWith("-"); if (neg) s = s.slice(1);
+  let v; try { v = BigInt(s || "0"); } catch (e) { return null; }
+  return neg ? -v : v;
+}
+function decHexToBytes(hex) { const a = []; for (let i = 0; i + 1 < hex.length; i += 2) a.push(parseInt(hex.substr(i, 2), 16)); return a; }
+function parseHexBytes(text) {
+  const out = [];
+  for (let line of text.split(/\r?\n/)) {
+    let s = line.trim(); if (!s) continue;
+    s = s.replace(/^(0x)?[0-9a-fA-F]{4,}:\s*/, "");   // "ADDR:" prefix (xxd / gdb)
+    s = s.replace(/^[0-9a-fA-F]{8,}\s+/, "");          // bare long-hex address (our dump)
+    for (let t of s.split(/[\s,]+/)) {
+      t = t.replace(/^0x/i, "").replace(/\\x/gi, "");
+      if (t.length >= 2 && t.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(t))
+        for (let i = 0; i < t.length; i += 2) out.push(parseInt(t.substr(i, 2), 16));
+    }
+  }
+  return out;
+}
+function decReadLE(idx, size) {
+  if (idx < 0 || idx + size > decBytes.length) return null;
+  let v = 0n; for (let k = size - 1; k >= 0; k--) v = (v << 8n) | BigInt(decBytes[idx + k]); return v;
+}
+function decValue(f) {
+  const off = decParseOff(f.off);
+  if (off === null) return { text: "(bad offset)" };
+  const idx = Number((decRefVA() + off) - bufBaseVA);
+  if (f.type === "str") {
+    if (idx < 0 || idx >= decBytes.length) return { text: "—" };
+    let s = "";
+    for (let i = idx; i < decBytes.length && i < idx + 64; i++) {
+      const c = decBytes[i]; if (c === 0) break;
+      s += (c >= 32 && c < 127) ? String.fromCharCode(c) : ".";
+    }
+    return { text: s ? '"' + s + '"' : "—" };
+  }
+  const SZ = { u8: 1, u16: 2, u32: 4, u64: 8, s32: 4, s64: 8, ptr: 8 };
+  const sz = SZ[f.type] || 8;
+  const raw = decReadLE(idx, sz);
+  if (raw === null) return { text: "—" };
+  if (f.type === "ptr") {
+    const cls = hvPtrClass(raw), hx = "0x" + raw.toString(16);
+    return { html: cls ? `<span class="ptr ${cls}">${hx}</span>` : hx };
+  }
+  if (f.type === "s32" || f.type === "s64") {
+    const bits = sz * 8; let v = raw;
+    if (v >= (1n << BigInt(bits - 1))) v -= (1n << BigInt(bits));
+    return { text: v.toString() + "  (0x" + raw.toString(16) + ")" };
+  }
+  return { text: raw.toString() + "  (0x" + raw.toString(16) + ")" };
+}
+function refreshValues() {
+  const rows = document.getElementById("dec-body").children;
+  decFields.forEach((f, i) => {
+    const vc = rows[i] && rows[i].querySelector(".val"); if (!vc) return;
+    const v = decValue(f);
+    if (v.html) vc.innerHTML = v.html; else vc.textContent = v.text;
+  });
+}
+function renderDecoder() {
+  const tb = document.getElementById("dec-body"); tb.innerHTML = "";
+  decFields.forEach((f, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td><input class="fname" value="${(f.name || "").replace(/"/g, "&quot;")}"></td>` +
+      `<td><input class="foff" value="${f.off}"></td>` +
+      `<td><select class="ftype">${DEC_TYPES.map(t => `<option${t === f.type ? " selected" : ""}>${t}</option>`).join("")}</select></td>` +
+      `<td class="val"></td><td><span class="rm">✕</span></td>`;
+    const v = decValue(f), vc = tr.querySelector(".val");
+    if (v.html) vc.innerHTML = v.html; else vc.textContent = v.text;
+    tr.querySelector(".fname").addEventListener("input", (e) => { f.name = e.target.value; decSave(); });
+    tr.querySelector(".foff").addEventListener("input", (e) => { f.off = e.target.value; decSave(); refreshValues(); });
+    tr.querySelector(".ftype").addEventListener("change", (e) => { f.type = e.target.value; decSave(); refreshValues(); });
+    tr.querySelector(".rm").addEventListener("click", () => { decFields.splice(i, 1); decSave(); renderDecoder(); });
+    tb.appendChild(tr);
+  });
+}
+function decOff(n) { return n < 0 ? "-0x" + (-n).toString(16) : "0x" + n.toString(16); }
+function initDecoder() {
+  document.getElementById("dec-hex").addEventListener("input", (e) => {
+    decHexReadMode = false;                 // pasted: byte 0 is at `base`
+    decBytes = parseHexBytes(e.target.value); bufBaseVA = decRefVA(); refreshValues();
+  });
+  document.getElementById("dec-base").addEventListener("input", () => { if (!decHexReadMode) bufBaseVA = decRefVA(); refreshValues(); });
+  document.getElementById("dec-add").addEventListener("click", () => { decFields.push({ name: "field", off: "0x0", type: "u64" }); decSave(); renderDecoder(); });
+  document.getElementById("dec-read").addEventListener("click", async () => {
+    let addr; try { addr = BigInt(document.getElementById("dec-addr").value.trim()); } catch (e) { return; }
+    const cnt = Math.max(16, Math.min(8192, parseInt(document.getElementById("dec-count").value, 10) || 1024));
+    bufBaseVA = addr - DEC_READPAD; decHexReadMode = true;
+    document.getElementById("dec-base").value = "0x" + addr.toString(16);  // offsets relative to addr
+    try {
+      const r = await fetch(`/read?addr=${(bufBaseVA & ((1n << 64n) - 1n)).toString(16)}&count=${cnt + Number(DEC_READPAD)}`, { cache: "no-store" });
+      const j = await r.json();
+      if (!j.ok) { document.getElementById("dec-hint").textContent = "讀取失敗：" + j.error; return; }
+      decBytes = decHexToBytes(j.hex);
+      document.getElementById("dec-hex").value = j.hex;
+      refreshValues();
+    } catch (e) { document.getElementById("dec-hint").textContent = "讀取失敗：" + e; }
+  });
+  document.getElementById("dec-fill").addEventListener("click", () => {
+    const cd = lastMeta.comm_delta, pd = lastMeta.pid_delta;
+    const set = (name, off, type) => { let f = decFields.find((x) => x.name === name); if (!f) { f = { name, off, type }; decFields.push(f); } f.off = off; f.type = type; };
+    set("tasks.next", "0x0", "ptr"); set("tasks.prev", "0x8", "ptr");
+    if (cd !== undefined && cd !== null) set("comm", decOff(cd), "str");
+    if (pd !== undefined && pd !== null) { set("pid", decOff(pd), "u32"); set("tgid", decOff(pd + 4), "u32"); }
+    decSave(); renderDecoder();
+  });
+  renderDecoder();
+}
+let decHexReadMode = false;
+
 buildHead();
+initDecoder();
 poll();
 setInterval(poll, 1000);
 </script>

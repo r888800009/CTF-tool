@@ -253,7 +253,14 @@ the `tasks` ring reading each task's comm at that offset. The `pid` field offset
 discovered heuristically (pid == tgid, a small varied positive int for the group
 leaders on the list). Needs to be stopped in the kernel on x86-64; the result is
 cached. The `tasks node` column is a stable per-task anchor (`task_struct` base +
-the `tasks` offset).
+the `tasks` offset). Click a task row to hexdump its `task_struct` (region-coloured
+pointers, adjustable offset/length).
+
+The page also has a **task_struct decoder**: paste a hexdump (or pull one from a
+node address with the read button) and decode named fields at adjustable offsets
+(`u8/16/32/64`, signed, `ptr` — coloured by region — and `str`). "用偵測到的
+offset 預填" seeds `comm`/`pid`/`tgid` from the offsets the sync discovered, so you
+can read one task's fields and tweak from there.
 
 ## Shared helpers
 
