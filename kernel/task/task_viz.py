@@ -101,30 +101,39 @@ def _discover(anchor=None):
 
 
 def _find_pid_delta(nodes):
-    """Offset (relative to a tasks node) of the `pid` field, found heuristically:
-    pid and tgid are adjacent equal small ints for the group leaders on this
-    list, and vary across tasks."""
-    lo, hi = -1024, 1024
+    """Offset (relative to a tasks node) of the `pid` field, found heuristically.
+
+    In task_struct, `pid` and `tgid` are adjacent and equal for the thread-group
+    leaders on this list; PIDs are small positive ints, unique per task. So the
+    right offset is the one where most tasks read `pid == tgid` in [1, 0x400000)
+    AND those values are the most *distinct* — this rejects all-zero fields and
+    fields that are really (equal halves of) a pointer.
+    """
+    lo, hi = -2048, 2048
     wins = {}
-    for node in nodes[:12]:
+    for node in nodes[:16]:
         try:
             wins[node] = kmem.read_mem(node + lo, hi - lo)
         except gdb.error:
             pass
     if not wins:
         return None
+    n = len(wins)
+    best_po, best_score = None, (0, 0)
     for po in range(lo, hi - 8, 4):
-        vals, good = [], 0
+        vals = []
         for buf in wins.values():
             i = po - lo
             v = int.from_bytes(buf[i:i + 4], "little")
             v2 = int.from_bytes(buf[i + 4:i + 8], "little")
-            vals.append(v)
-            if v == v2 and 0 <= v < 0x400000:
-                good += 1
-        if good >= max(3, int(0.7 * len(wins))) and len(set(vals)) >= 3 and max(vals) > 0:
-            return po
-    return None
+            if v == v2 and 1 <= v < 0x400000:
+                vals.append(v)
+        distinct = len(set(vals))
+        if len(vals) >= max(3, int(0.6 * n)) and distinct >= max(3, int(0.5 * n)):
+            score = (distinct, len(vals))
+            if score > best_score:
+                best_score, best_po = score, po
+    return best_po
 
 
 def _walk_tasks(anchor=None):
