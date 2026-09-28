@@ -453,6 +453,30 @@ def _maple_root(mm):
     return None
 
 
+def _maple_debug(mm):
+    """Raw bytes of the mm head and the maple root node, for diagnosing an
+    incomplete walk (returned only when the maple walk found suspiciously few
+    VMAs). All hex so the browser can render a region-coloured hexdump."""
+    d = {"mm": "0x%x" % mm}
+    try:
+        d["mm_head"] = kmem.read_mem(mm, 64).hex()
+    except gdb.error:
+        return d
+    root = _maple_root(mm)
+    if root is None:
+        d["note"] = "no maple root ((w&3)==2 kheap word) found in mm head"
+        return d
+    d["ma_root"] = "0x%x" % root
+    d["root_type"] = _MAPLE_TYPE.get((root >> 3) & 0xF, "?")
+    node = root & ~0xFF
+    d["root_node_addr"] = "0x%x" % node
+    try:
+        d["root_node"] = kmem.read_mem(node, 256).hex()
+    except gdb.error:
+        pass
+    return d
+
+
 def _build_maple(enode, fields, depth=0, seen=None):
     """Nested maple-tree node {type, children, vmas} for drawing.
 
@@ -576,6 +600,10 @@ def _collect_vmas_for_node(node):
     tree = _vma_tree(mm, bases, fields, kver) if bases else None
     if tree is not None:
         out["tree"] = tree
+    # A real user process has several VMAs; if a maple kernel yields very few, the
+    # node walk is off — attach the raw maple bytes so the layout can be checked.
+    if _is_maple(kver) and len(vmas) < 4:
+        out["debug"] = _maple_debug(mm)
     return out
 
 

@@ -93,6 +93,9 @@
   .mnode.t2 { background: #1a2740; border-color: #7fb2ff; color: #b9d4ff; }  /* range_64 */
   .mnode.t1, .mnode.t0 { background: #2a2140; border-color: #d2a8ff; color: #e6d4ff; }  /* leaves */
   .mvmas { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; max-width: 340px; }
+  details.mdbg { margin-top: 10px; font-size: 12px; }
+  details.mdbg summary { cursor: pointer; color: var(--warn); }
+  details.mdbg .dim { color: var(--muted); margin: 6px 0 2px; }
 </style>
 </head>
 <body>
@@ -260,8 +263,22 @@ async function loadVmas(box, t) {
            `<td class="sz">${fmtSize(v.size)}</td><td class="pm">${v.perms}</td>` +
            `<td class="dim">${v.flags}</td><td class="vaddr">${v.addr}</td></tr>`;
     }
-    box.innerHTML = h + `</tbody></table>`;
+    h += `</tbody></table>`;
+    if (j.debug) h += renderMapleDebug(j.debug);
+    box.innerHTML = h;
   } catch (e) { box.innerHTML = `<span class="vma-err">讀取失敗：${hvEsc(String(e))}</span>`; }
+}
+
+// Diagnostic dump when a maple walk finds too few VMAs: region-coloured hexdump of
+// the mm head and the maple root node, so the node layout can be checked/pasted.
+function renderMapleDebug(d) {
+  let h = `<details class="mdbg" open><summary>maple 走訪異常 — 診斷傾印（請複製貼回）</summary>`;
+  h += `<div class="dim">mm ${d.mm}` +
+       (d.ma_root ? ` · ma_root ${d.ma_root} (${d.root_type}) · root node ${d.root_node_addr}` : "") +
+       (d.note ? ` · ${hvEsc(d.note)}` : "") + `</div>`;
+  if (d.mm_head) h += `<div class="dim">mm_struct head:</div><pre class="hex">${hvHexdump(BigInt(d.mm), d.mm_head)}</pre>`;
+  if (d.root_node) h += `<div class="dim">maple root node:</div><pre class="hex">${hvHexdump(BigInt(d.root_node_addr), d.root_node)}</pre>`;
+  return h + `</details>`;
 }
 
 function vmaChip(v) {
