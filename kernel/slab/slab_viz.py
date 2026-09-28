@@ -14,7 +14,6 @@ so a differing kernel version degrades to showing what it can. Shared server /
 command / reload machinery lives in kernel/regviz_common.py.
 """
 
-import json
 import sys
 from pathlib import Path
 
@@ -416,30 +415,11 @@ def _slab_sync(server, args=None):
         print("[slabviz] synced %d slab caches (from debug info)" % len(caches))
 
 
-def _route_read(app, query):
-    """On-demand read of kernel *virtual* memory, for expanding a cache in the
-    browser. Runs the read on gdb's main thread. Returns {ok, addr, hex}."""
-    try:
-        addr = int(query.get("addr", ["0"])[0], 16)
-        count = int(query.get("count", ["256"])[0])
-    except ValueError:
-        return 400, json.dumps({"ok": False, "error": "bad params"}), "application/json"
-    count = max(1, min(count, 4096))
-    res = regviz_common.call_on_main(
-        lambda: bytes(gdb.selected_inferior().read_memory(addr, count)))
-    if not res.get("ok"):
-        return 200, json.dumps({"ok": False, "error": res.get("error", "read failed")}), \
-            "application/json"
-    return 200, json.dumps({"ok": True, "addr": "0x%x" % addr,
-                            "hex": res["result"].hex()}), "application/json"
-
-
 regviz_common.install_app(
     prefix="slabviz",
     default_port=8774,
     label="slab",
     html_path=Path(__file__).resolve().parent / "slab_viz.html",
-    routes={"/slabmem": _route_read},
     sync_fn=_slab_sync,
     sync_hint="the slab caches",
 )

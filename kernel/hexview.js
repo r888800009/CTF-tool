@@ -5,11 +5,18 @@
 
 function hvEsc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
 
-// Classify a 64-bit little-endian value by address region.
+// Classify a 64-bit little-endian value by address region (x86-64 4-level),
+// mirroring kvmmap's region labels so pointers colour by exactly where they land.
 function hvPtrClass(v) {
-  if (v >= 0xffffffff80000000n && v <= 0xffffffffffffffffn) return "ktext";
-  if (v >= 0xffff800000000000n && v < 0xffffffff80000000n) return "kheap";
-  if (v >= 0x1000n && v < 0x0000800000000000n) return "user";
+  if (v < 0x1000n) return null;
+  if (v < 0x0000800000000000n) return "user";              // canonical low half
+  if (v >= 0xffffffffff600000n) return "kvsys";            // vsyscall
+  if (v >= 0xffffffffff000000n) return "kcpu";             // cpu_entry_area
+  if (v >= 0xffffffffa0000000n) return "kmod";             // modules
+  if (v >= 0xffffffff80000000n) return "ktext";            // kernel image (text/rodata/data)
+  if (v >= 0xffffea0000000000n && v < 0xffffeb0000000000n) return "kvmemmap";
+  if (v >= 0xffffc90000000000n && v < 0xffffe90000000000n) return "kvmalloc";
+  if (v >= 0xffff800000000000n) return "kheap";            // direct map
   return null;
 }
 
@@ -49,8 +56,11 @@ async function hvLoad(pre, addr, count) {
   } catch (e) { pre.textContent = "讀取失敗：" + e; }
 }
 
-// A colour legend row (HTML string) for the three regions.
+// A colour legend row (HTML string) for the regions hvPtrClass distinguishes.
 function hvLegend() {
-  return `<div class="leg"><span class="ktext">■</span> kernel text/rodata　` +
-    `<span class="kheap">■</span> kernel heap/vmap　<span class="user">■</span> userspace</div>`;
+  const items = [["ktext", "image"], ["kmod", "modules"], ["kheap", "direct-map"],
+    ["kvmalloc", "vmalloc"], ["kvmemmap", "vmemmap"], ["kcpu", "cpu_entry"],
+    ["kvsys", "vsyscall"], ["user", "user"]];
+  return '<div class="leg">' +
+    items.map(([c, l]) => `<span class="${c}">■</span> ${l}`).join("　") + "</div>";
 }
