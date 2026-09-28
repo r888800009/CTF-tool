@@ -277,9 +277,12 @@ image, no symbols needed) and drives which VMA index the viewer reconstructs and
 **draws**:
 
 - **Linux ≥ 6.1 → the maple tree.** From `mm_mt.ma_root` it walks the maple nodes
-  (type from each enode's tag byte), collecting child enodes and, at the leaves,
-  the stored `vm_area_struct` pointers, and draws the n-ary node-link tree with the
-  leaf VMA ranges as chips.
+  directly: each enode's low byte gives the node type, and only that type's slot
+  array is followed (leaf_64/range_64: 16 slots at offset 128; arange_64: 10 slots
+  at 80) — child enodes recurse, leaf slots hold the stored `vm_area_struct`
+  pointers. Walking only the tree's own slots (rather than scanning the whole node
+  or wandering the heap) is what makes the walk both complete and bounded. The
+  n-ary node-link tree is drawn with the leaf VMA ranges as chips.
 - **Older kernels → the red-black tree (`mm_rb`).** It finds the embedded `vm_rb`
   offset (the word triple whose children/parent reference other VMAs' rb_nodes),
   locates the root from `mm_rb.rb_node`, and walks the parent-colour/left/right

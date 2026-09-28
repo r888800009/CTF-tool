@@ -44,6 +44,11 @@ _CACHE = None  # {tasks_head, comm_delta, mm_delta, kver}
 # an enode is recovered with & ~0xff. Ordinary object pointers are only 8-aligned.
 _MAPLE_MIN = (6, 1)
 _MAPLE_TYPE = {0: "dense", 1: "leaf_64", 2: "range_64", 3: "arange_64"}
+# (slot-array offset, slot count) per maple node type on 64-bit. A node is 256
+# bytes: parent@0, then pivots, then the slots. leaf_64/range_64 hold 16 slots at
+# offset 128 (15 pivots @8..127); arange_64 holds 10 slots at 80 (9 pivots @8..79,
+# then 10 gaps); dense holds pointers from offset 0.
+_MAPLE_SLOTS = {0: (0, 32), 1: (128, 16), 2: (128, 16), 3: (80, 10)}
 
 
 def _child_addr(w):
@@ -477,33 +482,79 @@ def _maple_debug(mm):
     return d
 
 
-def _build_maple(enode, fields, depth=0, seen=None):
-    """Nested maple-tree node {type, children, vmas} for drawing.
+def _maple_slots(node, typ):
+    """Yield the non-zero slot values of a maple node, by its type's slot layout.
 
-    A maple node is 256 bytes, 256-aligned; the enode's low byte carries the type
-    (`(enode >> 3) & 0xf`). Word 0 is the parent (skipped); the remaining words are
-    slots holding either child enodes (tagged) or, at leaves, clean pointers to the
-    stored vm_area_structs. We keep only slots that resolve to already-validated
-    VMAs (`fields`), so pivots and stale words never masquerade as entries."""
+    A maple node is 256 bytes, 256-aligned; only the type-specific slot array holds
+    child enodes / stored entries — walking exactly that (rather than the whole
+    node) skips the parent pointer, pivots and gaps, so nothing is mistaken for an
+    entry and, crucially, the walk follows only the tree (no budget, no wandering
+    into unrelated kernel-heap objects, which was losing all but one VMA)."""
+    slot_off, nslots = _MAPLE_SLOTS.get(typ, (0, 32))
+    try:
+        buf = kmem.read_mem(node, 256)
+    except gdb.error:
+        return
+    for i in range(nslots):
+        o = slot_off + i * 8
+        if o + 8 > len(buf):
+            break
+        w = _u64(buf, o)
+        if w:
+            yield w
+
+
+def _maple_collect(enode, mm, out, seen, depth=0):
+    """Walk the maple tree from `enode`, filling `out` {addr: vma} with every VMA.
+
+    Each slot is either a tagged child enode ((w & 3) == 2 → recurse) or, at a leaf,
+    a clean pointer to a stored vm_area_struct (validate against `mm`)."""
+    node = enode & ~0xFF
+    if node in seen or depth > 32 or not kmem.is_kheap(node):
+        return
+    seen.add(node)
+    for w in _maple_slots(node, (enode >> 3) & 0xF):
+        if (w & 3) == 2 and kmem.is_kheap(w & ~0xFF):
+            _maple_collect(w, mm, out, seen, depth + 1)
+        else:
+            a = w & ~0x7
+            if kmem.is_kheap(a) and a not in out:
+                v = _vma_at(a, mm)
+                if v is not None:
+                    out[a] = v
+
+
+def _maple_vmas(mm):
+    """All VMAs of `mm` via a direct maple-tree walk (Linux ≥ 6.1). Falls back to
+    the generic BFS if no maple root is found in the mm head."""
+    root = _maple_root(mm)
+    if root is None:
+        return _walk_vmas(mm)
+    out = {}
+    _maple_collect(root, mm, out, set())
+    return sorted(out.values(), key=lambda x: int(x["start"], 16))
+
+
+def _build_maple(enode, fields, depth=0, seen=None):
+    """Nested maple-tree node {type, children, vmas} for drawing, walking the same
+    type-specific slots as :func:`_maple_collect`. Child enodes (tagged) recurse;
+    clean slot pointers that resolve to a known VMA (`fields`) are leaf entries."""
     if seen is None:
         seen = set()
     node = enode & ~0xFF
     if not kmem.is_kheap(node) or node in seen or depth > 32:
         return None
     seen.add(node)
-    try:
-        buf = kmem.read_mem(node, 256)
-    except gdb.error:
-        return None
     children, vmas = [], []
-    for o in range(8, 256, 8):  # skip word 0 (parent back-pointer)
-        w = _u64(buf, o)
+    for w in _maple_slots(node, (enode >> 3) & 0xF):
         if (w & 3) == 2 and kmem.is_kheap(w & ~0xFF):
             c = _build_maple(w, fields, depth + 1, seen)
             if c is not None:
                 children.append(c)
-        elif w and (w & 0x7) == 0 and w in fields:
-            vmas.append(fields[w])
+        else:
+            a = w & ~0x7
+            if a in fields:
+                vmas.append(fields[a])
     return {
         "addr": "0x%x" % node,
         "type": (enode >> 3) & 0xF,
@@ -590,8 +641,10 @@ def _collect_vmas_for_node(node):
     if not kmem.is_kheap(mm):
         return {"mm": None, "vmas": [],
                 "note": "no mm (kernel thread, or task exited)"}
-    vmas = _walk_vmas(mm)
     kver = disc.get("kver")
+    # A maple kernel gets the dedicated tree walk (complete, no wandering); older
+    # kernels use the generic BFS (which follows the mmap list / rb links).
+    vmas = _maple_vmas(mm) if _is_maple(kver) else _walk_vmas(mm)
     out = {"mm": "0x%x" % mm, "vmas": vmas,
            "kver": kver["banner"] if kver else None,
            "vma_index": "maple" if _is_maple(kver) else ("rbtree" if kver else "?")}
