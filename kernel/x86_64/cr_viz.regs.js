@@ -94,25 +94,49 @@ window.REGS = [
   },
 ];
 
-// 4-level paging tree, walked live from CR3 via the shared page-table engine.
-// Enables the "Page tables" section: click a node to read the pointed-to table
-// (512 8-byte entries) over the gdb/QEMU monitor and expand the next level.
+// Paging tree, walked live from CR3 via the shared page-table engine. Enables the
+// "Page tables" section: click a node to read the pointed-to table (512 8-byte
+// entries) over the gdb/QEMU monitor and expand the next level.
+//
+// The depth is chosen at render time from CR4.LA57 (bit 12): 4-level, or 5-level
+// (LA57) as used by many syzkaller/syzbot kernels. Only the number of levels and
+// the canonical sign-extend boundary change; everything below is shared. Falls
+// back to 4-level before CR4 has been synced.
 window.REGVIZ_PAGETABLE = {
-  title: "4-level paging  (CR3 → PML4 → PDPT → PD → PT)",
+  title: "x86-64 paging  (CR3 → page tables)",
   baseReg: "CR3",                    // root table base comes from this register
   baseMask: "0x000ffffffffff000",    // physical base = bits 12..51 of an entry
   presentBit: 0,                     // bit 0 = Present
   largePageBit: 7,                   // bit 7 = PS: a leaf 1 GiB (PDPT) / 2 MiB (PD) page
-  canonicalBit: 47,                  // sign-extend VA above bit 47
   entriesPerTable: 512,
-  // Level names follow the naming mode too: Intel PML4/PDPT/PD/PT vs Linux
-  // PGD/PUD/PMD/PTE (P4D is folded away in 4-level paging).
-  levels: [
-    { name: "PML4", shift: 39, alt: { linux: "PGD" } },
-    { name: "PDPT", shift: 30, alt: { linux: "PUD" } },   // PS here -> 1 GiB page
-    { name: "PD",   shift: 21, alt: { linux: "PMD" } },   // PS here -> 2 MiB page
-    { name: "PT",   shift: 12, leaf: true, alt: { linux: "PTE" } },
-  ],
+  modeReg: "CR4",                    // depth selector: CR4.LA57 (bit 12)
+  modeBit: 12,
+  defaultDepth: "4",
+  // Level names follow the naming mode too: Intel PMLx/PDPT/PD/PT vs Linux
+  // PGD/P4D/PUD/PMD/PTE. In 4-level paging the P4D level is folded away.
+  variants: {
+    "4": {
+      title: "4-level paging  (CR3 → PML4 → PDPT → PD → PT)",
+      canonicalBit: 47,              // sign-extend VA above bit 47
+      levels: [
+        { name: "PML4", shift: 39, alt: { linux: "PGD" } },
+        { name: "PDPT", shift: 30, alt: { linux: "PUD" } },   // PS here -> 1 GiB page
+        { name: "PD",   shift: 21, alt: { linux: "PMD" } },   // PS here -> 2 MiB page
+        { name: "PT",   shift: 12, leaf: true, alt: { linux: "PTE" } },
+      ],
+    },
+    "5": {
+      title: "5-level paging  (CR3 → PML5 → PML4 → PDPT → PD → PT)",
+      canonicalBit: 56,              // 57-bit linear addresses: sign-extend above bit 56
+      levels: [
+        { name: "PML5", shift: 48, alt: { linux: "PGD" } },
+        { name: "PML4", shift: 39, alt: { linux: "P4D" } },
+        { name: "PDPT", shift: 30, alt: { linux: "PUD" } },   // PS here -> 1 GiB page
+        { name: "PD",   shift: 21, alt: { linux: "PMD" } },   // PS here -> 2 MiB page
+        { name: "PT",   shift: 12, leaf: true, alt: { linux: "PTE" } },
+      ],
+    },
+  },
   flags: {
     0:  ["P",   "Present", { linux: "_PAGE_PRESENT" }],
     1:  ["RW",  "Writable", { linux: "_PAGE_RW" }],

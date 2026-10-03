@@ -41,6 +41,7 @@
   </div>
   <table class="vm"><thead id="thead"></thead><tbody id="tbody"></tbody></table>
 
+<script src="/hexview.js"></script>
 <script>
 const COLS = [
   { k: "region", label: "region", num: false },
@@ -105,9 +106,16 @@ function render(force) {
   const frag = document.createDocumentFragment();
   for (const r of rows) {
     const tr = document.createElement("tr");
+    // Executable regions: make the start VA a link into the floating disassembler,
+    // coloured by region with the same convention as the disassembly/hexdump views.
+    const code = r.perms.includes("x") || r.region === "kernel image" || r.region === "modules";
+    const vaCls = (window.hvPtrClass ? (hvPtrClass(BigInt(r.va)) || "") : "");
+    const vaCell = code
+      ? `<td><span class="disas-addr ptr ${vaCls}" data-a="${r.va}">${r.va}</span></td>`
+      : `<td>${r.va}</td>`;
     tr.innerHTML =
       `<td class="region"><span class="${rgClass(r.region)}">${r.region}</span></td>` +
-      `<td>${r.va}</td><td>${r.va_end}</td><td>${sizeCell(r)}</td>` +
+      `${vaCell}<td>${r.va_end}</td><td>${sizeCell(r)}</td>` +
       `<td class="perms">${permsHtml(r.perms)}</td><td>${r.phys}</td>` +
       `<td class="module">${(r.module || "").replace(/</g, "&lt;")}</td>`;
     frag.appendChild(tr);
@@ -134,7 +142,9 @@ async function poll() {
     if (j.error) { err.style.display = "block"; err.textContent = "讀取錯誤：" + j.error; }
     else { err.style.display = "none"; }
     document.getElementById("meta").textContent =
-      j.cr3 ? `CR3 = ${j.cr3} · ${j.count || 0} entries（純記憶體：頁表以 monitor xp 讀取）`
+      j.cr3 ? `CR3 = ${j.cr3} · ${j.paging ? j.paging + " paging · " : ""}${j.count || 0} entries`
+              + `（純記憶體：頁表以 ${j.reads || "monitor xp"} 讀取${j.pob ? "，direct map @ " + j.pob : ""}）`
+              + (j.pagingnote ? " · " + j.pagingnote : "")
               + (j.modnote ? " · " + j.modnote : "") : "";
     if (j.synced_at && j.synced_at !== lastSynced) { lastSynced = j.synced_at; fetchList(); }
     if (!j.synced) { dot.className = "dot"; txt.textContent = `尚未同步 — 請在 gdb 下 ${(j.prefix || "kvmmap")} sync`; }
@@ -157,6 +167,9 @@ document.getElementById("filter").addEventListener("input", (e) => {
 });
 
 buildHead();
+// Delegated once on the persistent tbody: clicking a code region's VA opens the
+// floating disassembly window (hexview.js), from which addresses chain further.
+if (window.hvWireDisasLinks) hvWireDisasLinks(document.getElementById("tbody"));
 poll();
 setInterval(poll, 1000);
 </script>

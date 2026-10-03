@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
-_VERSION = 9  # bump when this shared implementation changes so re-sourcing hot-reloads
+_VERSION = 11  # bump when this shared implementation changes so re-sourcing hot-reloads
 _HTML_PATH = Path(__file__).resolve().parent / "regviz.html"
 _CSS_PATH = Path(__file__).resolve().parent / "regviz.css"  # shared theme for every app
 _HEXVIEW_PATH = Path(__file__).resolve().parent / "hexview.js"  # shared hexdump helper
@@ -185,6 +185,100 @@ def _read_phys_qwords(phys, count):
     return {"ok": True, "values": ["0x" + v for v in vals[:count]]}
 
 
+def _kernel_image_extent():
+    """Best-effort VA extent of the kernel image, read from memory (no symbols).
+
+    The image is the contiguous mapped run around the kernel text anchor ($pc if it
+    is in kernel text, else a kernel return address on the stack), probed at 2 MiB
+    granularity. This lets the browser colour kernel-text vs module pointers
+    correctly even when KASLR relocates the image above the classic fixed split
+    (symbols are no help: the loaded vmlinux isn't KASLR-adjusted). Returns
+    {"img": ["0xlo", "0xhi"]} or {"img": None}.
+    """
+    KLO, KHI, STEP = 0xFFFFFFFF80000000, 0xFFFFFFFFFF000000, 0x200000
+    inf = gdb.selected_inferior()
+
+    def mapped(va):
+        try:
+            inf.read_memory(va, 1)
+            return True
+        except gdb.error:
+            return False
+
+    anchor = None
+    try:
+        pc = int(gdb.parse_and_eval("$pc")) & 0xFFFFFFFFFFFFFFFF
+        if KLO <= pc < 0xFFFFFFFFFFFFFFFF:
+            anchor = pc
+    except gdb.error:
+        pass
+    if anchor is None:
+        try:
+            sp = int(gdb.parse_and_eval("$sp")) & 0xFFFFFFFFFFFFFFFF
+            blob = bytes(inf.read_memory(sp, 64 * 1024))
+            for i in range(0, len(blob) - 8, 8):
+                v = int.from_bytes(blob[i:i + 8], "little")
+                if KLO <= v < KHI:
+                    anchor = v
+                    break
+        except gdb.error:
+            pass
+    if anchor is None or not (KLO <= anchor < KHI):
+        return {"img": None}
+    base = anchor & ~(STEP - 1)
+    lo = base
+    while lo - STEP >= KLO and mapped(lo - STEP):
+        lo -= STEP
+    hi = base + STEP
+    while hi < KHI and mapped(hi):
+        hi += STEP
+    return {"img": ["0x%x" % lo, "0x%x" % hi]}
+
+
+def _read_qword_phys(phys):
+    """One little-endian qword at physical `phys` via the monitor, or None.
+
+    Runs on gdb's main thread (called from within call_on_main), so it uses
+    gdb.execute directly rather than posting another main-thread task.
+    """
+    try:
+        out = gdb.execute("monitor xp/1gx 0x%x" % phys, from_tty=False, to_string=True) or ""
+    except gdb.error:
+        return None
+    m = re.findall(r"0x([0-9a-fA-F]+)", out)
+    return int(m[-1], 16) if m else None   # last 0x token is the value (addr prefix has none)
+
+
+def _va_perms(va):
+    """Permissions of VA `va` in the current CR3 — a single-address page walk, no
+    symbols. Lets the browser pick asm (executable) vs hex (data) for an address.
+    Returns {present, x, w, user, size} or {present: False}.
+    """
+    PHYS = 0x000FFFFFFFFFF000
+    try:
+        cr3 = int(gdb.parse_and_eval("$cr3")) & 0xFFFFFFFFFFFFFFFF
+        cr4 = int(gdb.parse_and_eval("$cr4")) & 0xFFFFFFFFFFFFFFFF
+    except gdb.error:
+        return {"present": False, "error": "no cr3/cr4 (not a live target?)"}
+    levels = 5 if (cr4 >> 12) & 1 else 4          # CR4.LA57
+    shifts = [12 + 9 * (levels - 1 - lv) for lv in range(levels)]
+    table = cr3 & PHYS
+    rw = us = True
+    nx = False
+    for lv in range(levels):
+        shift = shifts[lv]
+        ent = _read_qword_phys(table + ((va >> shift) & 0x1FF) * 8)
+        if ent is None or not (ent & 1):
+            return {"present": False}
+        rw = rw and bool((ent >> 1) & 1)          # effective perms AND down the walk
+        us = us and bool((ent >> 2) & 1)
+        nx = nx or bool((ent >> 63) & 1)
+        if lv == levels - 1 or (shift in (21, 30) and (ent >> 7) & 1):   # leaf
+            return {"present": True, "x": not nx, "w": rw, "user": us, "size": 1 << shift}
+        table = ent & PHYS
+    return {"present": False}
+
+
 def _read_reg(expr):
     """Return a register value as an unsigned int, or None if unavailable.
 
@@ -337,6 +431,28 @@ def _make_handler():
                     body = {"ok": True, "addr": "0x%x" % addr, "text": res.get("output", "")}
                 else:
                     body = {"ok": False, "error": res.get("error", "disassembly failed")}
+                self._send(200, json.dumps(body).encode(), "application/json")
+            elif path == "/kinfo":
+                # Kernel image VA extent (for KASLR-correct pointer colouring).
+                res = call_on_main(_kernel_image_extent)
+                if res.get("ok"):
+                    body = dict(res["result"]); body["ok"] = True
+                else:
+                    body = {"ok": False, "error": res.get("error", "kinfo failed")}
+                self._send(200, json.dumps(body).encode(), "application/json")
+            elif path == "/vaperm":
+                # Page permissions of a VA (asm-vs-hex auto-pick in the disassembler).
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    addr = int(q.get("addr", ["0"])[0], 16)
+                except ValueError:
+                    self._send(400, b'{"ok":false,"error":"bad params"}', "application/json")
+                    return
+                res = call_on_main(lambda: _va_perms(addr))
+                if res.get("ok"):
+                    body = dict(res["result"]); body["ok"] = True
+                else:
+                    body = {"ok": False, "error": res.get("error", "vaperm failed")}
                 self._send(200, json.dumps(body).encode(), "application/json")
             elif path in app.routes:
                 # App-specific dynamic endpoint (e.g. the slab viewer's reads).

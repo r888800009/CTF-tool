@@ -385,6 +385,7 @@ def _walk_caches(head_hint=None):
 
 
 def _slab_sync(server, args=None):
+    kmem.reset_paging_cache()   # re-probe 4-/5-level paging for is_kheap() tests
     # `slabviz sync 0x<addr>` sets the slab_caches head directly (pure memory
     # mode, no symbols needed); the hint persists for later plain syncs.
     for tok in (args or []):

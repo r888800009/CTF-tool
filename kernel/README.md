@@ -113,13 +113,16 @@ network you trust — anyone who can reach the port can view the register snapsh
 
 ## Page tables (x86_64)
 
-The x86_64 page shows an extra **Page tables** section that walks the 4-level
-paging hierarchy live from `CR3`:
+The x86_64 page shows an extra **Page tables** section that walks the paging
+hierarchy live from `CR3`. The depth adapts to the target: **4-level, or 5-level
+(LA57)** — detected from `CR4.LA57` on each sync, with the section title showing
+which mode is active (so syzkaller/syzbot 5-level kernels walk correctly):
 
-1. Run `crviz sync` so the page has the current `CR3`.
-2. The tree shows the `PML4` root; click a node to expand it one level at a time
-   (`PML4 → PDPT → PD → PT`). Each expansion reads the pointed-to table (512
-   8-byte entries) over the gdb/QEMU monitor (`monitor xp`).
+1. Run `crviz sync` so the page has the current `CR3` (and `CR4`).
+2. The tree shows the root table (`PML4` on 4-level, `PML5` on 5-level); click a
+   node to expand it one level at a time (`PML4 → PDPT → PD → PT`, prefixed by
+   `PML5` under LA57). Each expansion reads the pointed-to table (512 8-byte
+   entries) over the gdb/QEMU monitor (`monitor xp`).
 3. Each row shows its index, raw entry value, decoded flags
    (`P/RW/US/PWT/PCD/A/D/PS/G/NX`), the next-level physical base, and the
    (canonical) virtual address it covers. A `PS` entry at PDPT/PD is a
@@ -210,8 +213,10 @@ can and reports a clear error otherwise (e.g. on a non-kernel target).
 ## Kernel VM map (kvmmap)
 
 `kernel/kvmmap/kvmmap_viz.py` is a `vmmap` for the kernel: it walks the current
-`CR3`'s 4-level page tables and coalesces contiguous mappings with identical
-permissions into regions.
+`CR3`'s page tables and coalesces contiguous mappings with identical permissions
+into regions. The **paging depth is auto-detected** — 4-level, or 5-level (LA57)
+as used by many syzkaller/syzbot kernels — so it works across kernel versions and
+configs without being told which layout is in use.
 
 ```gdb
 (gdb) source kernel/kvmmap/kvmmap_viz.py
@@ -225,17 +230,34 @@ reappearing at a regular VA stride, e.g. the vmemmap zero page → one `N × pag
 row instead of N identical lines). Each row shows VA start/end, size (or
 `N × page`), permissions (`r/w/x`, `u`ser vs `s`upervisor, `g`lobal) and a
 **region label** — user, kernel image, modules, direct map, vmalloc, vmemmap or
-vsyscall — coloured by area (pwntools-style). Rows in the **modules** region also
-get a **module** column with the owning module's name, resolved best-effort by
-scanning the kernel `modules` list from memory (needs kernel context; blank if it
-can't be read). Sort by any column; filter by region, perms or module name. The 1 s poll carries only a small summary; the collapsed list is fetched
-once per sync.
+vsyscall — coloured by area (pwntools-style). The **kernel image vs modules** split
+is measured from the mapping (the contiguous run that contains the kernel text
+anchor, i.e. `$pc`), not from a fixed boundary, so a KASLR-relocated image above
+the classic `0xffffffffa0000000` line is still labelled correctly. Rows in the
+**modules** region also get a **module** column with the owning module's name,
+resolved best-effort by scanning the kernel `modules` list from memory (needs
+kernel context; blank if it can't be read). Sort by any column; filter by region,
+perms or module name. The 1 s poll carries only a small summary; the collapsed
+list is fetched once per sync.
 
-Like the slab viewer this is **pure memory, no symbols**: `CR3` is a register and
-the page tables are read as physical memory over the QEMU monitor (`monitor xp`).
-Targets x86-64 4-level paging; region boundaries follow
-`Documentation/arch/x86/x86_64/mm.rst` and tolerate KASLR (the coarse windows are
-fixed even though the bases move).
+Like the slab viewer this is **pure memory, no symbols**. `CR3` is a register and
+the page tables are physical memory. They are read the fast way when possible: the
+viewer locates the kernel direct map (`page_offset_base`) with no symbols — the one
+top-level subtree that linearly maps RAM, found even under KASLR — and then reads
+each table as ordinary guest memory at `base + phys` over the binary gdb protocol
+instead of the `monitor xp` text command. On kernels whose direct map is split to
+4 KiB pages (`debug_pagealloc` / KASAN, common on syzkaller) this turns a ~30 s
+sync of thousands of tables into a couple of seconds; it falls back to `monitor xp`
+per table when the direct map can't be located. The page header shows which read
+path and base were used.
+
+Targets x86-64 long mode in either **4-level or 5-level (LA57) paging**, chosen
+from `CR4.LA57` and confirmed by whether the walk recovers the kernel-text mapping
+(so a wrong or unreadable `CR4` self-corrects). The current mode is shown next to
+`CR3` in the page header. Region boundaries follow
+`Documentation/arch/x86/x86_64/mm.rst` for the detected mode — the petabyte-scale
+direct map / vmalloc / vmemmap windows move under 5-level — and tolerate KASLR (the
+coarse windows are fixed even though the per-window bases move).
 
 ## Task list (task_struct)
 
