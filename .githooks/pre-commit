@@ -1,12 +1,15 @@
 #!/bin/sh
-# pre-commit hook:用 jscpd 檢查 kernel/ 下的 Python 與 HTML 是否有過多重複程式碼。
+# pre-commit hook:檢查 kernel/ 下的 Python 檔案長度,並用 jscpd 檢查
+# Python / HTML / JS / CSS 是否有過多重複程式碼。
 #
 # 掛載方式(committed hook,可被版控分享):
 #     git config core.hooksPath .githooks
 #
-# Python 與 HTML 各自使用獨立門檻(jscpd 單一 config 只支援一個 threshold):
+# 各語言使用獨立門檻(jscpd 單一 config 只支援一個 threshold):
 #     .jscpd.python.json  ->  Python,threshold 30%
 #     .jscpd.html.json    ->  HTML(markup),threshold 20%
+#     .jscpd.js.json      ->  JavaScript,threshold 20%
+#     .jscpd.css.json     ->  CSS,threshold 20%
 # 需要先安裝 jscpd:  npm install -g jscpd
 
 # 定位 jscpd:優先使用 PATH 中已安裝的,其次退回 npx 自動抓取。
@@ -21,17 +24,41 @@ fi
 
 status=0
 
+# kernel/ 下的 Python 檔案長度上限(行數)。單檔過長通常代表責任過多,
+# 應拆分為更小的模組。如需調整上限,改這裡即可。
+MAX_PY_LINES=1000
+
+echo "pre-commit: 檢查 kernel/ Python 檔案長度 (上限 ${MAX_PY_LINES} 行)..."
+# 只檢查本次 commit 會納入、且仍存在的 kernel/*.py(排除 .venv 等虛擬環境)。
+for f in $(git diff --cached --name-only --diff-filter=ACM -- 'kernel/**/*.py' 'kernel/*.py'); do
+    case "$f" in
+        */.venv/*|*/site-packages/*) continue ;;
+    esac
+    [ -f "$f" ] || continue
+    lines=$(wc -l < "$f")
+    if [ "$lines" -gt "$MAX_PY_LINES" ]; then
+        echo "pre-commit: $f 有 $lines 行,超過上限 ${MAX_PY_LINES} 行。" >&2
+        status=1
+    fi
+done
+
 echo "pre-commit: 使用 jscpd 檢查 kernel/ Python 重複程式碼 (門檻 30%)..."
 $JSCPD --config .jscpd.python.json || status=1
 
 echo "pre-commit: 使用 jscpd 檢查 kernel/ HTML 重複程式碼 (門檻 20%)..."
 $JSCPD --config .jscpd.html.json || status=1
 
+echo "pre-commit: 使用 jscpd 檢查 kernel/ JS 重複程式碼 (門檻 20%)..."
+$JSCPD --config .jscpd.js.json || status=1
+
+echo "pre-commit: 使用 jscpd 檢查 kernel/ CSS 重複程式碼 (門檻 20%)..."
+$JSCPD --config .jscpd.css.json || status=1
+
 if [ "$status" -ne 0 ]; then
     echo "" >&2
-    echo "pre-commit: kernel/ 的 Python/HTML 重複程式碼超過門檻,commit 已被擋下。" >&2
-    echo "            請將重複邏輯抽取為共用函式/模組後再 commit。" >&2
-    echo "            (門檻設定於 .jscpd.python.json / .jscpd.html.json;如需暫時略過可用 'git commit --no-verify')" >&2
+    echo "pre-commit: kernel/ 的 Python 檔案過長,或 Python/HTML/JS/CSS 重複程式碼超過門檻,commit 已被擋下。" >&2
+    echo "            請將過長或重複的邏輯拆分/抽取為共用函式/模組後再 commit。" >&2
+    echo "            (門檻設定於 .jscpd.{python,html,js,css}.json;如需暫時略過可用 'git commit --no-verify')" >&2
 fi
 
 exit "$status"

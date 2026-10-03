@@ -1,7 +1,7 @@
 // Shared hexdump with pwntools-style pointer colouring by address region, plus a
 // helper that reads virtual memory over the server's /read endpoint and renders
-// it into a <pre>. Used by the slab and task_struct viewers. (.js is not scanned
-// by the jscpd duplication hook, so keeping this shared here is free.)
+// it into a <pre>, and the floating disassembly/hex window. Shared by every
+// viewer, which keeps it DRY (the jscpd pre-commit hook scans JS too).
 
 function hvEsc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
 
