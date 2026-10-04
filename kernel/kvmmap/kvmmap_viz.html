@@ -126,7 +126,7 @@ function render(force) {
 
 async function fetchList() {
   try {
-    const r = await fetch("/kvmlist", { cache: "no-store" });
+    const r = await fetch("kvmlist", { cache: "no-store" });
     const j = await r.json();
     items = j.items || [];
     render(true);
@@ -135,7 +135,7 @@ async function fetchList() {
 
 async function poll() {
   try {
-    const r = await fetch("/data", { cache: "no-store" });
+    const r = await fetch("data", { cache: "no-store" });
     const j = await r.json();
     document.getElementById("synccmd").textContent = (j.prefix || "kvmmap") + " sync";
     const dot = document.getElementById("dot"), txt = document.getElementById("status-text"), err = document.getElementById("err");

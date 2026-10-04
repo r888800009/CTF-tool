@@ -12,25 +12,34 @@ addresses, interrupt masks, and so on.
 
 ## Architectures
 
-| Arch | Folder | Source in gdb | Web command | Default port | Registers |
+| Arch | Folder | Source in gdb | Web command | URL path | Registers |
 | --- | --- | --- | --- | --- | --- |
-| x86_64 | `kernel/x86_64/` | `source kernel/x86_64/cr_viz.py` | `crviz` | 8770 | CR0/CR2/CR3/CR4/CR8, EFER |
-| AArch64 (ARM64) | `kernel/arm64/` | `source kernel/arm64/sysreg_viz.py` | `armviz` | 8771 | SCTLR/TCR/TTBR0/1/MAIR/ESR/FAR/VBAR/CPACR/DAIF/CurrentEL … |
-| RISC-V | `kernel/riscv/` | `source kernel/riscv/csr_viz.py` | `csrviz` | 8772 | mstatus/sstatus/misa/satp/mtvec/mie/mip/mcause … |
-| MIPS | `kernel/mips/` | `source kernel/mips/cp0_viz.py` | `cp0viz` | 8773 | Status/Cause/EPC/BadVAddr/EntryHi/EntryLo/PageMask … |
+| x86_64 | `kernel/x86_64/` | `source kernel/x86_64/cr_viz.py` | `crviz` | `/crviz/` | CR0/CR2/CR3/CR4/CR8, EFER |
+| AArch64 (ARM64) | `kernel/arm64/` | `source kernel/arm64/sysreg_viz.py` | `armviz` | `/armviz/` | SCTLR/TCR/TTBR0/1/MAIR/ESR/FAR/VBAR/CPACR/DAIF/CurrentEL … |
+| RISC-V | `kernel/riscv/` | `source kernel/riscv/csr_viz.py` | `csrviz` | `/csrviz/` | mstatus/sstatus/misa/satp/mtvec/mie/mip/mcause … |
+| MIPS | `kernel/mips/` | `source kernel/mips/cp0_viz.py` | `cp0viz` | `/cp0viz/` | Status/Cause/EPC/BadVAddr/EntryHi/EntryLo/PageMask … |
 
 All four plugins behave the same way and share the same UI.
 
+> **One shared port.** Every viewer runs on a single local HTTP server (the
+> *hub*, default **`127.0.0.1:8780`**) and is served at its own path, e.g.
+> `http://127.0.0.1:8780/kvmmap/`. The hub starts the first time you `source` any
+> viewer; sourcing more just registers them — each is independent, so re-sourcing
+> one (to pick up an edit) never restarts the hub or disturbs the other open tabs.
+> The landing page `/` lists every loaded viewer, and the nav bar jumps between
+> them. `<viz> start` opens that viewer's page; `<viz> start [HOST] [PORT]`
+> rebinds the shared hub (see below).
+
 There are also memory viewers built on the same server:
 
-| Viewer | Folder | Source in gdb | Web command | Default port | Shows |
+| Viewer | Folder | Source in gdb | Web command | URL path | Shows |
 | --- | --- | --- | --- | --- | --- |
-| SLUB slab caches | `kernel/slab/` | `source kernel/slab/slab_viz.py` | `slabviz` | 8774 | every `kmem_cache`: sizes, objs/slab, per-node slab/object counts |
-| Kernel VM map | `kernel/kvmmap/` | `source kernel/kvmmap/kvmmap_viz.py` | `kvmmap` | 8775 | CR3 page tables coalesced into regions (VA/size/phys/perms/region) |
-| Task list | `kernel/task/` | `source kernel/task/task_viz.py` | `taskviz` | 8776 | processes scanned from memory: PID, comm, tasks-node; expand to hexdump `task_struct` and follow `mm → vm_area_struct` (VMAs / maps) |
-| IDT / vsyscall | `kernel/idt/` | `source kernel/idt/idt_viz.py` | `idtviz` | 8777 | x86-64 interrupt vector table (256 gates: handler, type, DPL, IST, present) and the vsyscall page |
-| ARM64 vectors | `kernel/arm64/` | `source kernel/arm64/vbar_viz.py` | `vbarviz` | 8778 | AArch64 exception vector table from `VBAR_EL1` (16 vectors, disassembled, with each handler branch target) |
-| RISC-V trap vector | `kernel/riscv/` | `source kernel/riscv/stvec_viz.py` | `stvecviz` | 8779 | S-mode trap entry from `stvec` (BASE + Direct/Vectored mode; handler slots disassembled) |
+| SLUB slab caches | `kernel/slab/` | `source kernel/slab/slab_viz.py` | `slabviz` | `/slabviz/` | every `kmem_cache`: sizes, objs/slab, per-node slab/object counts |
+| Kernel VM map | `kernel/kvmmap/` | `source kernel/kvmmap/kvmmap_viz.py` | `kvmmap` | `/kvmmap/` | CR3 page tables coalesced into regions (VA/size/phys/perms/region) |
+| Task list | `kernel/task/` | `source kernel/task/task_viz.py` | `taskviz` | `/taskviz/` | processes scanned from memory: PID, comm, tasks-node; expand to hexdump `task_struct` and follow `mm → vm_area_struct` (VMAs / maps) |
+| IDT / vsyscall | `kernel/idt/` | `source kernel/idt/idt_viz.py` | `idtviz` | `/idtviz/` | x86-64 interrupt vector table (256 gates: handler, type, DPL, IST, present) and the vsyscall page |
+| ARM64 vectors | `kernel/arm64/` | `source kernel/arm64/vbar_viz.py` | `vbarviz` | `/vbarviz/` | AArch64 exception vector table from `VBAR_EL1` (16 vectors, disassembled, with each handler branch target) |
+| RISC-V trap vector | `kernel/riscv/` | `source kernel/riscv/stvec_viz.py` | `stvecviz` | `/stvecviz/` | S-mode trap entry from `stvec` (BASE + Direct/Vectored mode; handler slots disassembled) |
 
 ## Layout
 
@@ -66,9 +75,9 @@ are relative to the repo):
 
 Sourcing the file:
 
-- starts a small local web server (see the port in the table above),
-- opens the page in your browser (skipped silently on headless machines — just
-  open the printed URL yourself),
+- starts the shared hub web server if it isn't already running, and registers this
+  viewer on it (served at its own URL path — see the table above),
+- prints the viewer's URL (run `<viz> start` to open it in a browser),
 - registers a single per-arch command (`crviz` / `armviz` / `csrviz` / `cp0viz`)
   with subcommands.
 
@@ -91,25 +100,26 @@ subcommand so it never collides with anything else in your gdb session.
 | Command | Description |
 | --- | --- |
 | `<viz> sync` | Read the registers now and push them to the web page. |
-| `<viz>` / `<viz> status` | Show whether the server is running and the last sync time. |
-| `<viz> start [HOST] [PORT]` | Start the server, optionally on a specific bind address and/or port. |
-| `<viz> stop` | Stop the server. |
+| `<viz>` / `<viz> status` | Show the viewer's URL and the last sync time. |
+| `<viz> start [HOST] [PORT]` | Open the viewer's page; with HOST/PORT, rebind the shared hub (affects every tool). |
+| `<viz> stop` | Unregister this viewer from the hub (stops the hub when it was the last one). |
 
 ## Access from another machine
 
-By default the server binds to `127.0.0.1` (loopback only). When gdb runs on one
-machine and you want to open the page from another, bind to all interfaces by
-passing the host to the start command — it is **not** a default, you opt in:
+By default the shared hub binds to `127.0.0.1` (loopback only). When gdb runs on
+one machine and you want to open the pages from another, rebind the hub to all
+interfaces by passing the host to any viewer's start command — it is **not** a
+default, you opt in (this rebinds the one hub, so it affects every tool):
 
 ```gdb
-(gdb) crviz start 0.0.0.0            # x86_64; use armviz / csrviz / cp0viz for the others
+(gdb) crviz start 0.0.0.0            # rebind the hub to all interfaces
 (gdb) crviz start 0.0.0.0 8080       # all interfaces, custom port
 (gdb) crviz start 0.0.0.0:8080       # host:port form also works
 ```
 
-When bound to `0.0.0.0` the plugin prints a URL using this machine's LAN IP so a
+When bound to `0.0.0.0` the hub prints a URL using this machine's LAN IP so a
 remote browser has a reachable address to open. Only bind to `0.0.0.0` on a
-network you trust — anyone who can reach the port can view the register snapshot.
+network you trust — anyone who can reach the port can view every viewer.
 
 ## Page tables (x86_64)
 
@@ -417,8 +427,9 @@ address-region tests — so no viewer re-implements them.
   register names vary by target, so several name aliases are tried per register.
 - Register values are sent to the browser as hex strings and decoded with
   `BigInt`, so 64-bit values keep full precision.
-- The default ports differ per arch, so you can run more than one at a time; use
-  `<viz> start PORT` to override if a port is taken.
+- All viewers share one hub port; run as many as you like at once and switch
+  between them via the nav bar or the `/` landing page. Use `<viz> start PORT` to
+  move the hub if `8780` is taken.
 
 ## Typical QEMU setup
 

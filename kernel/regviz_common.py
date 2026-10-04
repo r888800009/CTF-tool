@@ -23,35 +23,42 @@ from urllib.parse import parse_qs, urlparse
 
 import gdb  # provided by the gdb Python runtime
 
-_VERSION = 11  # bump when this shared implementation changes so re-sourcing hot-reloads
+_VERSION = 12  # bump when this shared implementation changes so re-sourcing hot-reloads
 _HTML_PATH = Path(__file__).resolve().parent / "regviz.html"
 _CSS_PATH = Path(__file__).resolve().parent / "regviz.css"  # shared theme for every app
 _HEXVIEW_PATH = Path(__file__).resolve().parent / "hexview.js"  # shared hexdump helper
 _NAV_PATH = Path(__file__).resolve().parent / "nav.js"  # shared cross-module nav bar
 
+# All viewers share ONE HTTP server (the "hub") on one port. Each registers an App
+# under its prefix; pages are served at /<prefix>/ and their relative fetches
+# (data, regs.js, …) resolve there via an injected <base>, while these resources
+# are global across every tool. Re-sourcing one plugin only replaces its registry
+# entry — the hub keeps running, so the other tools are never interrupted.
+_HUB_DEFAULT_PORT = 8780
+_GLOBAL_STATIC = {               # url -> file, served the same for every app
+    "/regviz.css": _CSS_PATH,
+    "/hexview.js": _HEXVIEW_PATH,
+    "/nav.js": _NAV_PATH,
+}
+# Root paths handled by the hub itself (never routed to an app prefix).
+_GLOBAL_ENDPOINTS = frozenset({"/nav", "/mem", "/read", "/disas", "/kinfo", "/vaperm"})
+
+
+def _apps():
+    """The process-wide {prefix: App} registry (one dict for the whole gdb)."""
+    reg = getattr(gdb, "_regviz_apps", None)
+    if reg is None:
+        reg = {}
+        gdb._regviz_apps = reg
+    return reg
+
 
 def _running_apps():
-    """Every regviz-family web view currently running in this gdb process.
-
-    All the viewers share one gdb Python process and each stashes its running
-    server as ``gdb._regviz_<prefix>``, so enumerating those attributes yields the
-    live modules — the data behind the cross-module navigation bar. Returns a list
-    of {prefix, label, port}, sorted by port."""
-    apps = []
-    for name in list(vars(gdb)):
-        if not name.startswith("_regviz_"):
-            continue
-        obj = getattr(gdb, name, None)
-        httpd = getattr(obj, "_httpd", None)
-        if httpd is None:
-            continue
-        try:
-            port = httpd.server_address[1]
-        except Exception:  # noqa: BLE001
-            continue
-        apps.append({"prefix": getattr(obj, "prefix", name[len("_regviz_"):]),
-                     "label": getattr(obj, "label", ""), "port": port})
-    apps.sort(key=lambda a: a["port"])
+    """Every registered viewer, for the cross-module navigation bar. They all share
+    one hub on one port now, so each entry links by path: {prefix, label}. Sorted
+    by prefix for a stable bar."""
+    apps = [{"prefix": p, "label": a.label} for p, a in _apps().items()]
+    apps.sort(key=lambda a: a["prefix"])
     return apps
 
 
@@ -355,134 +362,151 @@ def _make_handler():
             except OSError as exc:
                 self._send(500, str(exc).encode(), "text/plain; charset=utf-8")
 
-        def _send_page(self, path):
-            """Serve the main HTML page with the shared cross-module nav bar script
-            injected, so every viewer gets the navigation without editing its HTML."""
+        def _send_page(self, app):
+            """Serve an app's HTML with a ``<base href="/<prefix>/">`` (so the page's
+            relative fetches — data, regs.js, the app's own routes — resolve under
+            its prefix while /regviz.css, /hexview.js and the shared endpoints stay
+            global) plus the cross-module nav bar, injected without editing the HTML.
+            """
             try:
-                html = Path(path).read_text()
+                html = Path(app.html_path).read_text()
             except OSError as exc:
                 self._send(500, str(exc), "text/plain; charset=utf-8")
                 return
-            tag = '<script src="/nav.js"></script>'
-            if tag not in html:
-                if "</body>" in html:
-                    html = html.replace("</body>", tag + "\n</body>", 1)
-                else:
-                    html += "\n" + tag
+            base = '<base href="/%s/">' % app.prefix
+            i = html.lower().find("<head>")
+            if i != -1 and base not in html:
+                html = html[:i + 6] + "\n  " + base + html[i + 6:]
+            nav = '<script src="/nav.js"></script>'
+            if nav not in html:
+                html = (html.replace("</body>", nav + "\n</body>", 1)
+                        if "</body>" in html else html + "\n" + nav)
             self._send(200, html, "text/html; charset=utf-8")
 
-        def do_GET(self):
-            app = self.server.app
-            path = self.path.split("?", 1)[0]
-            if path in ("/", "/index.html"):
-                self._send_page(app.html_path)
-            elif path == "/nav":
-                body = {"apps": _running_apps(), "current": app.prefix}
-                self._send(200, json.dumps(body).encode(), "application/json")
-            elif path in app.static:
-                self._send_file(app.static[path], _ctype_for(path))
-            elif path == "/data":
-                snap = app.state.snapshot()
-                snap["prefix"] = app.prefix  # so the page can show `<prefix> sync`
-                self._send(200, json.dumps(snap).encode(), "application/json")
-            elif path == "/mem":
-                # On-demand physical-memory read (used by the page-table tree).
-                q = parse_qs(urlparse(self.path).query)
+        def _send_landing(self):
+            """The hub root: a small index linking to every registered viewer."""
+            items = "".join(
+                '<li><a href="/%s/">%s</a> <span class="sub">%s</span></li>'
+                % (a["prefix"], a["prefix"], a["label"]) for a in _running_apps()
+            ) or "<li class='sub'>尚無已載入的工具（在 gdb source 其中一個 viewer）</li>"
+            html = ("<!doctype html><html lang=zh-Hant><head><meta charset=utf-8>"
+                    "<title>Kernel viewers</title><link rel=stylesheet href=\"/regviz.css\">"
+                    "</head><body><h1>Kernel viewers</h1>"
+                    "<ul style='line-height:2;list-style:none;padding:0'>" + items + "</ul>"
+                    '<script src="/nav.js"></script></body></html>')
+            self._send(200, html, "text/html; charset=utf-8")
+
+        def _global_endpoint(self, path):
+            q = parse_qs(urlparse(self.path).query)
+            if path == "/nav":
+                self._send(200, json.dumps({"apps": _running_apps()}).encode(),
+                           "application/json"); return
+            if path == "/mem":
                 try:
                     phys = int(q.get("phys", ["0"])[0], 16)
-                    count = int(q.get("count", ["512"])[0])
+                    count = max(1, min(int(q.get("count", ["512"])[0]), 512))
                 except ValueError:
-                    self._send(400, b'{"ok":false,"error":"bad params"}',
-                               "application/json")
-                    return
-                count = max(1, min(count, 512))
+                    self._send(400, b'{"ok":false,"error":"bad params"}', "application/json"); return
                 self._send(200, json.dumps(_read_phys_qwords(phys, count)).encode(),
-                           "application/json")
-            elif path == "/read":
-                # On-demand *virtual* memory read (hexdump of a struct, etc.).
-                q = parse_qs(urlparse(self.path).query)
+                           "application/json"); return
+            if path == "/read":
                 try:
                     addr = int(q.get("addr", ["0"])[0], 16)
-                    count = int(q.get("count", ["256"])[0])
+                    count = max(1, min(int(q.get("count", ["256"])[0]), 8192))
                 except ValueError:
-                    self._send(400, b'{"ok":false,"error":"bad params"}', "application/json")
-                    return
-                count = max(1, min(count, 8192))
-                res = call_on_main(
-                    lambda: bytes(gdb.selected_inferior().read_memory(addr, count)))
-                if res.get("ok"):
-                    body = {"ok": True, "addr": "0x%x" % addr, "hex": res["result"].hex()}
-                else:
-                    body = {"ok": False, "error": res.get("error", "read failed")}
-                self._send(200, json.dumps(body).encode(), "application/json")
-            elif path == "/disas":
-                # On-demand disassembly of `count` instructions at `addr` (used by
-                # the interrupt/exception vector viewers to open a handler).
-                q = parse_qs(urlparse(self.path).query)
+                    self._send(400, b'{"ok":false,"error":"bad params"}', "application/json"); return
+                res = call_on_main(lambda: bytes(gdb.selected_inferior().read_memory(addr, count)))
+                body = ({"ok": True, "addr": "0x%x" % addr, "hex": res["result"].hex()}
+                        if res.get("ok") else {"ok": False, "error": res.get("error", "read failed")})
+                self._send(200, json.dumps(body).encode(), "application/json"); return
+            if path == "/disas":
                 try:
                     addr = int(q.get("addr", ["0"])[0], 16)
-                    count = int(q.get("count", ["24"])[0])
+                    count = max(1, min(int(q.get("count", ["24"])[0]), 256))
                 except ValueError:
-                    self._send(400, b'{"ok":false,"error":"bad params"}', "application/json")
-                    return
-                count = max(1, min(count, 256))
+                    self._send(400, b'{"ok":false,"error":"bad params"}', "application/json"); return
                 res = _run_on_main("x/%di 0x%x" % (count, addr))
-                if res.get("ok"):
-                    body = {"ok": True, "addr": "0x%x" % addr, "text": res.get("output", "")}
-                else:
-                    body = {"ok": False, "error": res.get("error", "disassembly failed")}
-                self._send(200, json.dumps(body).encode(), "application/json")
-            elif path == "/kinfo":
-                # Kernel image VA extent (for KASLR-correct pointer colouring).
+                body = ({"ok": True, "addr": "0x%x" % addr, "text": res.get("output", "")}
+                        if res.get("ok") else {"ok": False, "error": res.get("error", "disassembly failed")})
+                self._send(200, json.dumps(body).encode(), "application/json"); return
+            if path == "/kinfo":
                 res = call_on_main(_kernel_image_extent)
-                if res.get("ok"):
-                    body = dict(res["result"]); body["ok"] = True
-                else:
-                    body = {"ok": False, "error": res.get("error", "kinfo failed")}
-                self._send(200, json.dumps(body).encode(), "application/json")
-            elif path == "/vaperm":
-                # Page permissions of a VA (asm-vs-hex auto-pick in the disassembler).
-                q = parse_qs(urlparse(self.path).query)
+                body = dict(res["result"]) if res.get("ok") else {"error": res.get("error", "kinfo failed")}
+                body["ok"] = bool(res.get("ok"))
+                self._send(200, json.dumps(body).encode(), "application/json"); return
+            if path == "/vaperm":
                 try:
                     addr = int(q.get("addr", ["0"])[0], 16)
                 except ValueError:
-                    self._send(400, b'{"ok":false,"error":"bad params"}', "application/json")
-                    return
+                    self._send(400, b'{"ok":false,"error":"bad params"}', "application/json"); return
                 res = call_on_main(lambda: _va_perms(addr))
-                if res.get("ok"):
-                    body = dict(res["result"]); body["ok"] = True
-                else:
-                    body = {"ok": False, "error": res.get("error", "vaperm failed")}
-                self._send(200, json.dumps(body).encode(), "application/json")
-            elif path in app.routes:
-                # App-specific dynamic endpoint (e.g. the slab viewer's reads).
+                body = dict(res["result"]) if res.get("ok") else {"error": res.get("error", "vaperm failed")}
+                body["ok"] = bool(res.get("ok"))
+                self._send(200, json.dumps(body).encode(), "application/json"); return
+            self._send(404, b"not found", "text/plain; charset=utf-8")
+
+        def do_GET(self):
+            raw = self.path.split("?", 1)[0]
+            if raw in _GLOBAL_STATIC:                       # shared files, same for all
+                self._send_file(_GLOBAL_STATIC[raw], _ctype_for(raw)); return
+            if raw in _GLOBAL_ENDPOINTS:                    # shared JSON endpoints
+                self._global_endpoint(raw); return
+            if raw in ("/", "/index.html"):                # hub landing page
+                self._send_landing(); return
+            seg = raw.strip("/").split("/", 1)             # /<prefix>/<rest>
+            app = _apps().get(seg[0])
+            rest = "/" + (seg[1] if len(seg) > 1 else "")
+            if app is None:
+                self._send(404, b"not found", "text/plain; charset=utf-8"); return
+            if rest == "/":
+                self._send_page(app); return
+            if rest == "/data":
+                snap = app.state.snapshot(); snap["prefix"] = app.prefix
+                self._send(200, json.dumps(snap).encode(), "application/json"); return
+            if rest in app.static:
+                self._send_file(app.static[rest], _ctype_for(rest)); return
+            if rest in app.routes:
                 q = parse_qs(urlparse(self.path).query)
                 try:
-                    code, body, ctype = app.routes[path](app, q)
+                    code, body, ctype = app.routes[rest](app, q)
                 except Exception as exc:  # noqa: BLE001 - report cleanly as JSON
                     code = 500
                     body = json.dumps({"ok": False, "error": "%s: %s"
                                        % (type(exc).__name__, exc)})
                     ctype = "application/json"
-                self._send(code, body, ctype)
-            else:
-                self._send(404, b"not found", "text/plain; charset=utf-8")
+                self._send(code, body, ctype); return
+            self._send(404, b"not found", "text/plain; charset=utf-8")
 
     return _Handler
 
 
-class Server:
-    def __init__(self, prefix, default_port, label, html_path,
-                 static=None, routes=None, sync_fn=None, sync_hint=None):
+class App:
+    """One viewer registered with the hub: its page, per-app static files, dynamic
+    routes and sync function. Holds no socket — the hub serves it under /<prefix>/.
+    """
+
+    def __init__(self, prefix, label, html_path, static, routes, sync_fn, sync_hint):
         self.prefix = prefix
-        self.default_port = default_port
         self.label = label
-        self.html_path = html_path          # the "/" page
-        self.static = static or {}          # {url_path: file_path}
-        self.routes = routes or {}          # {url_path: handler(app, query)->(code, body, ctype)}
-        self.sync_fn = sync_fn              # called by `<prefix> sync` (on the main thread)
+        self.html_path = html_path          # served at /<prefix>/
+        self.static = static or {}          # {"/regs.js": file, ...} under /<prefix>/
+        self.routes = routes or {}          # {"/kvmlist": handler(app, query)->(code,body,ctype)}
+        self.sync_fn = sync_fn              # run on gdb's main thread by `<prefix> sync`
         self.sync_hint = sync_hint or "the current data"
         self.state = _State()
+
+    def sync(self, args=None):
+        if self.sync_fn:
+            self.sync_fn(self, args or [])
+
+
+class Hub:
+    """The single shared HTTP server. One socket, one port; it routes every
+    registered App by the first path segment and serves the global resources."""
+
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
         self._httpd = None
         self._thread = None
         self._version = _VERSION
@@ -491,164 +515,157 @@ class Server:
     def running(self):
         return self._httpd is not None
 
-    @property
-    def url(self):
-        if not self._httpd:
-            return None
-        host, port = self._httpd.server_address[:2]
-        if host in ("0.0.0.0", "::"):
-            # Bound to every interface (for access from another machine): show a
-            # LAN address that a remote browser can actually reach, not loopback.
-            host = _primary_ip()
-        return "http://%s:%d/" % (host, port)
+    def url(self, prefix=""):
+        host = _primary_ip() if self.host in ("0.0.0.0", "::") else self.host
+        return "http://%s:%d/%s" % (host, self.port, (prefix + "/") if prefix else "")
 
-    def start(self, port=None, host=None, open_browser=True):
+    def start(self):
         if self._httpd is not None:
-            print("[%s] already running on %s" % (self.prefix, self.url))
-            return
-        port = port or self.default_port
-        host = host or "127.0.0.1"
+            return True
         try:
-            httpd = http.server.ThreadingHTTPServer((host, port), _make_handler())
+            httpd = http.server.ThreadingHTTPServer((self.host, self.port), _make_handler())
         except OSError as exc:
-            print("[%s] could not bind %s:%d — %s" % (self.prefix, host, port, exc))
-            return
-        httpd.app = self
+            print("[regviz] could not bind %s:%d — %s" % (self.host, self.port, exc))
+            return False
         self._httpd = httpd
-        # Keep the module stash pointing at the running server so a later
-        # re-source reuses it (and `stop` can clear it) rather than colliding.
-        setattr(gdb, "_regviz_%s" % self.prefix, self)
-        self._thread = threading.Thread(
-            target=httpd.serve_forever, name="%s-http" % self.prefix, daemon=True
-        )
+        self._thread = threading.Thread(target=httpd.serve_forever,
+                                        name="regviz-hub", daemon=True)
         self._thread.start()
-        print("[%s] serving %s view at %s" % (self.prefix, self.label, self.url))
-        if host not in ("127.0.0.1", "localhost", "::1"):
-            print("[%s] bound to %s — reachable from other machines on the network"
-                  % (self.prefix, host))
-        print("[%s] run `%s sync` in gdb to push %s"
-              % (self.prefix, self.prefix, self.sync_hint))
-        if open_browser:
-            try:
-                webbrowser.open(self.url)
-            except Exception:  # noqa: BLE001 - headless boxes have no browser
-                pass
+        print("[regviz] hub serving at %s" % self.url())
+        if self.host not in ("127.0.0.1", "localhost", "::1"):
+            print("[regviz] bound to %s — reachable from other machines" % self.host)
+        return True
 
     def stop(self, quiet=False):
         if self._httpd is None:
-            if not quiet:
-                print("[%s] not running" % self.prefix)
             return
         self._httpd.shutdown()
         self._httpd.server_close()
         self._httpd = None
         self._thread = None
-        # Drop the module-level reference so a later re-source rebuilds a fresh
-        # server from the newly-loaded code instead of reusing this instance.
-        attr = "_regviz_%s" % self.prefix
-        if getattr(gdb, attr, None) is self:
-            try:
-                delattr(gdb, attr)
-            except AttributeError:
-                pass
         if not quiet:
-            print("[%s] stopped" % self.prefix)
+            print("[regviz] hub stopped")
 
-    def status(self):
-        if self.running:
-            snap = self.state.snapshot()
-            when = "never" if not snap["synced"] else time.strftime(
-                "%H:%M:%S", time.localtime(snap["synced_at"])
-            )
-            print("[%s] running on %s (last sync: %s)" % (self.prefix, self.url, when))
-        else:
-            print("[%s] not running" % self.prefix)
 
-    def sync(self, args=None):
-        if self.sync_fn:
-            self.sync_fn(self, args or [])
+def _sweep_legacy_servers():
+    """Stop any per-app servers left by an older (pre-hub) version in this gdb."""
+    for name in list(vars(gdb)):
+        if not name.startswith("_regviz_") or name in ("_regviz_hub", "_regviz_apps"):
+            continue
+        obj = getattr(gdb, name, None)
+        if getattr(obj, "_httpd", None) is not None and hasattr(obj, "stop"):
+            try:
+                obj.stop(quiet=True)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            delattr(gdb, name)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _ensure_hub(host=None, port=None, rebind=False):
+    """Return the running hub, starting it the first time. A version bump (shared
+    code changed) or an explicit rebind restarts it; a plain plugin re-source does
+    not touch it, so the other tools keep serving without interruption."""
+    hub = getattr(gdb, "_regviz_hub", None)
+    if hub is not None and hub._version != _VERSION:
+        hub.stop(quiet=True)
+        hub = None
+    if hub is None:
+        _sweep_legacy_servers()
+        hub = Hub(host or "127.0.0.1", port or _HUB_DEFAULT_PORT)
+        gdb._regviz_hub = hub
+    elif rebind and (host is not None or port is not None):
+        if host is not None:
+            hub.host = host
+        if port is not None:
+            hub.port = port
+        hub.stop(quiet=True)
+    if not hub.running:
+        hub.start()
+    return hub
 
 
 class _ControlCommand(gdb.Command):
-    """Control a register web view.
+    """Control a viewer.  Usage: <prefix> [start [HOST] [PORT] | sync | stop | status]
 
-    Usage: <prefix> [start [HOST] [PORT] | sync | stop | status]
-
-    `<prefix> sync` reads the registers now and pushes them to the page. HOST
-    defaults to 127.0.0.1 (loopback only); pass 0.0.0.0 to listen on every
-    interface so a browser on another machine can reach it.
+    All viewers share one hub on one port; `<prefix> start` opens that viewer's
+    page (and, with HOST/PORT, rebinds the shared hub — HOST 0.0.0.0 listens on
+    every interface for another machine). `<prefix> sync` pushes fresh data.
     """
 
-    def __init__(self, server):
-        super().__init__(server.prefix, gdb.COMMAND_USER)
-        self._server = server
+    def __init__(self, app):
+        super().__init__(app.prefix, gdb.COMMAND_USER)
+        self._prefix = app.prefix
 
     def invoke(self, arg, from_tty):
+        app = _apps().get(self._prefix)
+        hub = getattr(gdb, "_regviz_hub", None)
+        if app is None:
+            print("[%s] not registered — re-source its plugin" % self._prefix)
+            return
         tokens = gdb.string_to_argv(arg)
         if not tokens or tokens[0] == "status":
-            self._server.status()
+            if hub is None or not hub.running:
+                print("[%s] hub not running — `%s start` or `%s sync`"
+                      % (self._prefix, self._prefix, self._prefix))
+                return
+            snap = app.state.snapshot()
+            when = "never" if not snap["synced"] else time.strftime(
+                "%H:%M:%S", time.localtime(snap["synced_at"]))
+            print("[%s] %s (last sync: %s)" % (self._prefix, hub.url(self._prefix), when))
             return
         sub = tokens[0]
         if sub == "sync":
-            if not self._server.running:
-                print("[%s] web view is not running; starting it now" % self._server.prefix)
-                self._server.start()
-            self._server.sync(tokens[1:])
+            _ensure_hub()
+            app.sync(tokens[1:])
             return
         if sub == "stop":
-            self._server.stop()
+            _apps().pop(self._prefix, None)
+            print("[%s] unregistered from the hub" % self._prefix)
+            if not _apps() and hub is not None:
+                hub.stop()
             return
         if sub in ("start", "restart"):
             rest = tokens[1:]
         elif sub.isdigit() or ":" in sub or _looks_like_host(sub):
             rest = tokens  # `<prefix> 8000` / `<prefix> 0.0.0.0` shorthand
         else:
-            print("usage: %s [start [HOST] [PORT] | sync | stop | status]"
-                  % self._server.prefix)
+            print("usage: %s [start [HOST] [PORT] | sync | stop | status]" % self._prefix)
             return
         host, port = _parse_host_port(rest)
-        self._server.start(port=port, host=host)
+        hub = _ensure_hub(host=host, port=port, rebind=True)
+        if hub.running:
+            url = hub.url(self._prefix)
+            print("[%s] open %s" % (self._prefix, url))
+            try:
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001 - headless boxes have no browser
+                pass
 
 
-def install_app(*, prefix, default_port, label, html_path,
+def install_app(*, prefix, default_port=None, label, html_path,
                 static=None, routes=None, sync_fn=None, sync_hint=None):
-    """Create (or hot-reload) a web-app server, register its ``<prefix>`` and
-    ``sync`` gdb commands, and auto-start it.
-
-    Shared by the register views and the slab viewer so the HTTP server, the
-    commands, host binding and the reload logic live in exactly one place. Apps
-    differ only in their page (``html_path``), static files, dynamic ``routes``
-    and their ``sync_fn`` (run on gdb's main thread by ``<prefix> sync``).
+    """Register (or hot-replace) a viewer on the shared hub and define its
+    ``<prefix>`` gdb command. Re-sourcing only swaps this app's registry entry —
+    the hub (and every other tool) keeps running, so there is no reload stall.
+    ``default_port`` is accepted for backward compatibility but ignored: all tools
+    share the hub's single port.
     """
-    static = dict(static or {})
-    static.setdefault("/regviz.css", _CSS_PATH)      # every app shares the theme
-    static.setdefault("/hexview.js", _HEXVIEW_PATH)  # and the hexdump helper
-    static.setdefault("/nav.js", _NAV_PATH)          # and the cross-module nav bar
-    attr = "_regviz_%s" % prefix
-    prev = getattr(gdb, attr, None)
-    if prev is not None and getattr(prev, "_version", 0) != _VERSION:
-        try:
-            prev.stop(quiet=True)
-        except Exception:  # noqa: BLE001
-            pass
-        prev = None
-
-    if prev is None:
-        server = Server(prefix, default_port, label, html_path,
-                        static=static, routes=routes, sync_fn=sync_fn, sync_hint=sync_hint)
-        setattr(gdb, attr, server)
-    else:
-        server = prev  # reuse the running server, but refresh its config on re-source
-        server.html_path = html_path
-        server.static = static or {}
-        server.routes = routes or {}
-        server.sync_fn = sync_fn
-        server.sync_hint = sync_hint or server.sync_hint
-
-    _ControlCommand(server)
-    if not server.running:
-        server.start()
-    return server
+    apps = _apps()
+    app = App(prefix, label, html_path, static or {}, routes or {}, sync_fn, sync_hint)
+    prev = apps.get(prefix)
+    if prev is not None:
+        app.state = prev.state                 # keep the last sync across a re-source
+        if hasattr(prev, "exprs"):
+            app.exprs = prev.exprs
+    apps[prefix] = app
+    _ControlCommand(app)
+    hub = _ensure_hub()
+    if hub.running:
+        print("[%s] ready at %s" % (prefix, hub.url(prefix)))
+    return app
 
 
 def _register_sync(server, args=None):

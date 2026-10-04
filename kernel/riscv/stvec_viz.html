@@ -76,7 +76,7 @@ function render() {
 
 async function poll() {
   try {
-    const r = await fetch("/data", { cache: "no-store" });
+    const r = await fetch("data", { cache: "no-store" });
     const j = await r.json();
     document.getElementById("synccmd").textContent = (j.prefix || "stvecviz") + " sync";
     const dot = document.getElementById("dot"), txt = document.getElementById("status-text");

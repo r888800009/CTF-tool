@@ -239,7 +239,7 @@ function fmtSize(n) {
 async function loadVmas(box, t) {
   if (!t.mm) { box.innerHTML = `<span class="dim">此 task 無 mm（kernel thread，或已結束）</span>`; return; }
   try {
-    const r = await fetch(`/vmas?node=${encodeURIComponent(t.node)}`, { cache: "no-store" });
+    const r = await fetch(`vmas?node=${encodeURIComponent(t.node)}`, { cache: "no-store" });
     const j = await r.json();
     if (!j.ok) { box.innerHTML = `<span class="vma-err">讀取失敗：${hvEsc(j.error || "")}</span>`; return; }
     if (j.note) { box.innerHTML = `<span class="dim">${hvEsc(j.note)}</span>`; return; }
@@ -315,7 +315,7 @@ function mapleTree(root) { return `<ul>${mapleNode(root)}</ul>`; }
 
 async function poll() {
   try {
-    const r = await fetch("/data", { cache: "no-store" });
+    const r = await fetch("data", { cache: "no-store" });
     const j = await r.json();
     tasks = j.tasks || [];
     document.getElementById("synccmd").textContent = (j.prefix || "taskviz") + " sync";

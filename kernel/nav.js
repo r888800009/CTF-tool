@@ -1,11 +1,16 @@
 // Shared cross-module navigation bar. The server injects a <script src="/nav.js">
-// into every viewer's page; this fetches /nav (the list of regviz-family web views
-// currently running in the same gdb process) and renders a sticky bar at the top
-// so you can jump between the loaded modules. Links use the browser's own hostname
-// so they work whether you reached the page over loopback or a LAN address.
+// into every viewer's page; this fetches /nav (every viewer registered on the
+// shared hub) and renders a sticky bar at the top so you can jump between tools.
+// All tools live on one port now, so each link is just /<prefix>/ (absolute, so it
+// is unaffected by the page's <base>); the current tool is the first path segment.
 (function () {
+  function curPrefix() {
+    var m = location.pathname.replace(/^\/+/, "").split("/");
+    return m[0] || "";
+  }
   function build(j) {
     var apps = (j && j.apps) || [];
+    var cur = curPrefix();
     var bar = document.getElementById("regviz-nav");
     if (!bar) {
       bar = document.createElement("nav");
@@ -13,8 +18,9 @@
       document.body.insertBefore(bar, document.body.firstChild);
     }
     bar.innerHTML = "";
-    var brand = document.createElement("span");
+    var brand = document.createElement("a");
     brand.className = "rvnav-brand";
+    brand.href = "/";
     brand.textContent = "kernel viewers";
     bar.appendChild(brand);
 
@@ -27,11 +33,11 @@
     }
     apps.forEach(function (a) {
       var link = document.createElement("a");
-      link.className = "rvnav-item" + (a.prefix === j.current ? " cur" : "");
-      link.href = location.protocol + "//" + location.hostname + ":" + a.port + "/";
+      link.className = "rvnav-item" + (a.prefix === cur ? " cur" : "");
+      link.href = "/" + a.prefix + "/";
       link.innerHTML =
         '<span class="rvnav-label">' + (a.label || a.prefix) + "</span>" +
-        '<span class="rvnav-port">:' + a.port + "</span>";
+        '<span class="rvnav-port">' + a.prefix + "</span>";
       bar.appendChild(link);
     });
   }
