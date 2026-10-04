@@ -569,12 +569,14 @@ def _ensure_hub(host=None, port=None, rebind=False):
     code changed) or an explicit rebind restarts it; a plain plugin re-source does
     not touch it, so the other tools keep serving without interruption."""
     hub = getattr(gdb, "_regviz_hub", None)
+    keep_host = keep_port = None
     if hub is not None and hub._version != _VERSION:
+        keep_host, keep_port = hub.host, hub.port   # carry the bind across a version restart
         hub.stop(quiet=True)
         hub = None
     if hub is None:
         _sweep_legacy_servers()
-        hub = Hub(host or "127.0.0.1", port or _HUB_DEFAULT_PORT)
+        hub = Hub(host or keep_host or "127.0.0.1", port or keep_port or _HUB_DEFAULT_PORT)
         gdb._regviz_hub = hub
     elif rebind and (host is not None or port is not None):
         if host is not None:
@@ -645,6 +647,61 @@ class _ControlCommand(gdb.Command):
                 pass
 
 
+class _HubCommand(gdb.Command):
+    """Control the shared viewer hub (all tools live on one port).
+
+    Usage: regviz [status | bind [HOST] [PORT] | stop | open [PREFIX]]
+
+    `regviz bind 0.0.0.0 9000` moves every tool to that address/port in one step —
+    independent of any single viewer, so it works even after a `<viz> stop`. HOST
+    0.0.0.0 listens on every interface (for a browser on another machine); the
+    default is loopback only.
+    """
+
+    def __init__(self):
+        super().__init__("regviz", gdb.COMMAND_USER)
+
+    def invoke(self, arg, from_tty):
+        tokens = gdb.string_to_argv(arg)
+        hub = getattr(gdb, "_regviz_hub", None)
+        if not tokens or tokens[0] == "status":
+            if hub is None or not hub.running:
+                print("[regviz] hub not running (source a viewer, or `regviz bind`)")
+            else:
+                print("[regviz] hub at %s (bind %s:%d)" % (hub.url(), hub.host, hub.port))
+            for a in _running_apps():
+                print("  %s%s  (%s)" % (hub.url(a["prefix"]) if hub and hub.running
+                                        else "/%s/" % a["prefix"], "", a["label"]))
+            return
+        sub = tokens[0]
+        if sub == "stop":
+            if hub is not None and hub.running:
+                hub.stop()
+            else:
+                print("[regviz] hub not running")
+            return
+        if sub == "open":
+            hub = _ensure_hub()
+            url = hub.url(tokens[1] if len(tokens) > 1 else "")
+            print("[regviz] open %s" % url)
+            try:
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        if sub in ("bind", "start", "restart"):
+            rest = tokens[1:]
+        elif sub.isdigit() or ":" in sub or _looks_like_host(sub):
+            rest = tokens  # `regviz 9000` / `regviz 0.0.0.0` shorthand
+        else:
+            print("usage: regviz [status | bind [HOST] [PORT] | stop | open [PREFIX]]")
+            return
+        host, port = _parse_host_port(rest)
+        hub = _ensure_hub(host=host, port=port, rebind=True)
+        if hub.running:
+            print("[regviz] hub now at %s (bind %s:%d)" % (hub.url(), hub.host, hub.port))
+
+
 def install_app(*, prefix, default_port=None, label, html_path,
                 static=None, routes=None, sync_fn=None, sync_hint=None):
     """Register (or hot-replace) a viewer on the shared hub and define its
@@ -662,6 +719,7 @@ def install_app(*, prefix, default_port=None, label, html_path,
             app.exprs = prev.exprs
     apps[prefix] = app
     _ControlCommand(app)
+    _HubCommand()               # (re)register the viewer-independent `regviz` command
     hub = _ensure_hub()
     if hub.running:
         print("[%s] ready at %s" % (prefix, hub.url(prefix)))

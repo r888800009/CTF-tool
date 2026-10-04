@@ -104,6 +104,16 @@ subcommand so it never collides with anything else in your gdb session.
 | `<viz> start [HOST] [PORT]` | Open the viewer's page; with HOST/PORT, rebind the shared hub (affects every tool). |
 | `<viz> stop` | Unregister this viewer from the hub (stops the hub when it was the last one). |
 
+There is also one viewer-independent command for the shared hub itself (handy to
+move every tool at once, and it works even after a `<viz> stop`):
+
+| Command | Description |
+| --- | --- |
+| `regviz` / `regviz status` | Show the hub's bind address and list every viewer's URL. |
+| `regviz bind [HOST] [PORT]` | Move the whole hub to this address/port in one step (`regviz 9000` / `regviz 0.0.0.0` shorthand). |
+| `regviz open [PREFIX]` | Open the landing page, or a specific viewer, in a browser. |
+| `regviz stop` | Stop the hub (all tools). |
+
 ## Access from another machine
 
 By default the shared hub binds to `127.0.0.1` (loopback only). When gdb runs on
@@ -112,10 +122,13 @@ interfaces by passing the host to any viewer's start command — it is **not** a
 default, you opt in (this rebinds the one hub, so it affects every tool):
 
 ```gdb
-(gdb) crviz start 0.0.0.0            # rebind the hub to all interfaces
-(gdb) crviz start 0.0.0.0 8080       # all interfaces, custom port
-(gdb) crviz start 0.0.0.0:8080       # host:port form also works
+(gdb) regviz bind 0.0.0.0            # move the whole hub to all interfaces (recommended)
+(gdb) regviz bind 0.0.0.0 9000       # all interfaces, custom port
+(gdb) crviz start 0.0.0.0:8080       # per-viewer form also rebinds the hub
 ```
+
+`regviz bind` is the quickest switch: it is independent of any viewer, so it still
+works after `<viz> stop`, and it moves every tool at once (state is preserved).
 
 When bound to `0.0.0.0` the hub prints a URL using this machine's LAN IP so a
 remote browser has a reachable address to open. Only bind to `0.0.0.0` on a
