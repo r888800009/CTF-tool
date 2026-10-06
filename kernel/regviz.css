@@ -186,3 +186,46 @@ pre.disas-out { margin: 4px 0 8px; padding: 8px 10px; font-size: 12px; white-spa
   text-align: left; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; }
 /* full-width disassembly detail row inside a viewer table (flush left) */
 tr.disas-row td { text-align: left; background: var(--bg); padding: 6px 10px; }
+
+/* Clickable address token (in disassembly output or a hexdump code pointer) that
+   opens / navigates the floating disassembly window — "連續點進去". */
+.disas-addr { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.disas-addr:hover { filter: brightness(1.3); background: var(--field-bg); }
+.disas-addr.disas-cur { background: var(--set-bg); border-radius: 3px; }
+
+/* Floating, draggable disassembly window (hvDisasOpen in hexview.js). */
+.hv-diswin { display: none; flex-direction: column; position: fixed; top: 64px; right: 24px;
+  width: min(680px, 92vw); max-height: 70vh; z-index: 1000;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); overflow: hidden; }
+.hv-dishead { display: flex; align-items: center; gap: 8px; cursor: move;
+  padding: 6px 8px; background: var(--panel2); border-bottom: 1px solid var(--border); }
+.hv-distitle { flex: 1; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+  color: var(--field-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+input.hv-disin { background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+  padding: 2px 8px; outline: none; min-width: 0; }
+input.hv-disin:focus { border-color: var(--accent); }
+.hv-disgrip { color: var(--muted); font-size: 13px; cursor: move; user-select: none; }
+.hv-disbtn { background: var(--clear-bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 5px; padding: 1px 8px; font-size: 12px; cursor: pointer; line-height: 1.5; }
+.hv-disbtn:hover { border-color: var(--accent); }
+.hv-disbtn:disabled { opacity: 0.4; cursor: default; }
+pre.hv-disbody { margin: 0; padding: 8px 10px; overflow: auto; flex: 1; min-height: 0;
+  background: var(--bg); border: none; border-radius: 0; }
+/* history dropdown (the ⌄ button) */
+.hv-dishist { display: none; max-height: 40vh; overflow: auto; background: var(--panel2);
+  border-bottom: 1px solid var(--border); }
+.hv-dishist.open { display: block; }
+.hv-histitem { padding: 3px 12px; font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px; cursor: pointer; white-space: nowrap; }
+.hv-histitem:hover { background: var(--field-bg); }
+.hv-histitem.cur { background: var(--set-bg); }
+.hv-histitem.cur::before { content: "▸ "; color: var(--muted); }
+/* asm/hex mode toggle */
+.hv-modes { display: inline-flex; gap: 2px; }
+.hv-mode { font-size: 11px; padding: 1px 6px; }
+.hv-mode.active { background: var(--field-bg); color: var(--field-fg); border-color: var(--accent); }
+.hv-mode.eff { text-decoration: underline; text-underline-offset: 2px; }
+/* the marked entry point (⌂ returns here); asm uses .disas-cur above */
+.hex-cur { background: var(--set-bg); border-radius: 3px; }
+.hv-warn { color: var(--warn); }

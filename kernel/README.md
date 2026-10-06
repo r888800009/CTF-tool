@@ -12,25 +12,34 @@ addresses, interrupt masks, and so on.
 
 ## Architectures
 
-| Arch | Folder | Source in gdb | Web command | Default port | Registers |
+| Arch | Folder | Source in gdb | Web command | URL path | Registers |
 | --- | --- | --- | --- | --- | --- |
-| x86_64 | `kernel/x86_64/` | `source kernel/x86_64/cr_viz.py` | `crviz` | 8770 | CR0/CR2/CR3/CR4/CR8, EFER |
-| AArch64 (ARM64) | `kernel/arm64/` | `source kernel/arm64/sysreg_viz.py` | `armviz` | 8771 | SCTLR/TCR/TTBR0/1/MAIR/ESR/FAR/VBAR/CPACR/DAIF/CurrentEL … |
-| RISC-V | `kernel/riscv/` | `source kernel/riscv/csr_viz.py` | `csrviz` | 8772 | mstatus/sstatus/misa/satp/mtvec/mie/mip/mcause … |
-| MIPS | `kernel/mips/` | `source kernel/mips/cp0_viz.py` | `cp0viz` | 8773 | Status/Cause/EPC/BadVAddr/EntryHi/EntryLo/PageMask … |
+| x86_64 | `kernel/x86_64/` | `source kernel/x86_64/cr_viz.py` | `crviz` | `/crviz/` | CR0/CR2/CR3/CR4/CR8, EFER |
+| AArch64 (ARM64) | `kernel/arm64/` | `source kernel/arm64/sysreg_viz.py` | `armviz` | `/armviz/` | SCTLR/TCR/TTBR0/1/MAIR/ESR/FAR/VBAR/CPACR/DAIF/CurrentEL … |
+| RISC-V | `kernel/riscv/` | `source kernel/riscv/csr_viz.py` | `csrviz` | `/csrviz/` | mstatus/sstatus/misa/satp/mtvec/mie/mip/mcause … |
+| MIPS | `kernel/mips/` | `source kernel/mips/cp0_viz.py` | `cp0viz` | `/cp0viz/` | Status/Cause/EPC/BadVAddr/EntryHi/EntryLo/PageMask … |
 
 All four plugins behave the same way and share the same UI.
 
+> **One shared port.** Every viewer runs on a single local HTTP server (the
+> *hub*, default **`127.0.0.1:8780`**) and is served at its own path, e.g.
+> `http://127.0.0.1:8780/kvmmap/`. The hub starts the first time you `source` any
+> viewer; sourcing more just registers them — each is independent, so re-sourcing
+> one (to pick up an edit) never restarts the hub or disturbs the other open tabs.
+> The landing page `/` lists every loaded viewer, and the nav bar jumps between
+> them. `<viz> start` opens that viewer's page; `<viz> start [HOST] [PORT]`
+> rebinds the shared hub (see below).
+
 There are also memory viewers built on the same server:
 
-| Viewer | Folder | Source in gdb | Web command | Default port | Shows |
+| Viewer | Folder | Source in gdb | Web command | URL path | Shows |
 | --- | --- | --- | --- | --- | --- |
-| SLUB slab caches | `kernel/slab/` | `source kernel/slab/slab_viz.py` | `slabviz` | 8774 | every `kmem_cache`: sizes, objs/slab, per-node slab/object counts |
-| Kernel VM map | `kernel/kvmmap/` | `source kernel/kvmmap/kvmmap_viz.py` | `kvmmap` | 8775 | CR3 page tables coalesced into regions (VA/size/phys/perms/region) |
-| Task list | `kernel/task/` | `source kernel/task/task_viz.py` | `taskviz` | 8776 | processes scanned from memory: PID, comm, tasks-node; expand to hexdump `task_struct` and follow `mm → vm_area_struct` (VMAs / maps) |
-| IDT / vsyscall | `kernel/idt/` | `source kernel/idt/idt_viz.py` | `idtviz` | 8777 | x86-64 interrupt vector table (256 gates: handler, type, DPL, IST, present) and the vsyscall page |
-| ARM64 vectors | `kernel/arm64/` | `source kernel/arm64/vbar_viz.py` | `vbarviz` | 8778 | AArch64 exception vector table from `VBAR_EL1` (16 vectors, disassembled, with each handler branch target) |
-| RISC-V trap vector | `kernel/riscv/` | `source kernel/riscv/stvec_viz.py` | `stvecviz` | 8779 | S-mode trap entry from `stvec` (BASE + Direct/Vectored mode; handler slots disassembled) |
+| SLUB slab caches | `kernel/slab/` | `source kernel/slab/slab_viz.py` | `slabviz` | `/slabviz/` | every `kmem_cache`: sizes, objs/slab, per-node slab/object counts |
+| Kernel VM map | `kernel/kvmmap/` | `source kernel/kvmmap/kvmmap_viz.py` | `kvmmap` | `/kvmmap/` | CR3 page tables coalesced into regions (VA/size/phys/perms/region) |
+| Task list | `kernel/task/` | `source kernel/task/task_viz.py` | `taskviz` | `/taskviz/` | processes scanned from memory: PID, comm, tasks-node; expand to hexdump `task_struct` and follow `mm → vm_area_struct` (VMAs / maps) |
+| IDT / vsyscall | `kernel/idt/` | `source kernel/idt/idt_viz.py` | `idtviz` | `/idtviz/` | x86-64 interrupt vector table (256 gates: handler, type, DPL, IST, present) and the vsyscall page |
+| ARM64 vectors | `kernel/arm64/` | `source kernel/arm64/vbar_viz.py` | `vbarviz` | `/vbarviz/` | AArch64 exception vector table from `VBAR_EL1` (16 vectors, disassembled, with each handler branch target) |
+| RISC-V trap vector | `kernel/riscv/` | `source kernel/riscv/stvec_viz.py` | `stvecviz` | `/stvecviz/` | S-mode trap entry from `stvec` (BASE + Direct/Vectored mode; handler slots disassembled) |
 
 ## Layout
 
@@ -66,9 +75,9 @@ are relative to the repo):
 
 Sourcing the file:
 
-- starts a small local web server (see the port in the table above),
-- opens the page in your browser (skipped silently on headless machines — just
-  open the printed URL yourself),
+- starts the shared hub web server if it isn't already running, and registers this
+  viewer on it (served at its own URL path — see the table above),
+- prints the viewer's URL (run `<viz> start` to open it in a browser),
 - registers a single per-arch command (`crviz` / `armviz` / `csrviz` / `cp0viz`)
   with subcommands.
 
@@ -91,35 +100,52 @@ subcommand so it never collides with anything else in your gdb session.
 | Command | Description |
 | --- | --- |
 | `<viz> sync` | Read the registers now and push them to the web page. |
-| `<viz>` / `<viz> status` | Show whether the server is running and the last sync time. |
-| `<viz> start [HOST] [PORT]` | Start the server, optionally on a specific bind address and/or port. |
-| `<viz> stop` | Stop the server. |
+| `<viz>` / `<viz> status` | Show the viewer's URL and the last sync time. |
+| `<viz> start [HOST] [PORT]` | Open the viewer's page; with HOST/PORT, rebind the shared hub (affects every tool). |
+| `<viz> stop` | Unregister this viewer from the hub (stops the hub when it was the last one). |
+
+There is also one viewer-independent command for the shared hub itself (handy to
+move every tool at once, and it works even after a `<viz> stop`):
+
+| Command | Description |
+| --- | --- |
+| `regviz` / `regviz status` | Show the hub's bind address and list every viewer's URL. |
+| `regviz bind [HOST] [PORT]` | Move the whole hub to this address/port in one step (`regviz 9000` / `regviz 0.0.0.0` shorthand). |
+| `regviz open [PREFIX]` | Open the landing page, or a specific viewer, in a browser. |
+| `regviz stop` | Stop the hub (all tools). |
 
 ## Access from another machine
 
-By default the server binds to `127.0.0.1` (loopback only). When gdb runs on one
-machine and you want to open the page from another, bind to all interfaces by
-passing the host to the start command — it is **not** a default, you opt in:
+By default the shared hub binds to `127.0.0.1` (loopback only). When gdb runs on
+one machine and you want to open the pages from another, rebind the hub to all
+interfaces by passing the host to any viewer's start command — it is **not** a
+default, you opt in (this rebinds the one hub, so it affects every tool):
 
 ```gdb
-(gdb) crviz start 0.0.0.0            # x86_64; use armviz / csrviz / cp0viz for the others
-(gdb) crviz start 0.0.0.0 8080       # all interfaces, custom port
-(gdb) crviz start 0.0.0.0:8080       # host:port form also works
+(gdb) regviz bind 0.0.0.0            # move the whole hub to all interfaces (recommended)
+(gdb) regviz bind 0.0.0.0 9000       # all interfaces, custom port
+(gdb) crviz start 0.0.0.0:8080       # per-viewer form also rebinds the hub
 ```
 
-When bound to `0.0.0.0` the plugin prints a URL using this machine's LAN IP so a
+`regviz bind` is the quickest switch: it is independent of any viewer, so it still
+works after `<viz> stop`, and it moves every tool at once (state is preserved).
+
+When bound to `0.0.0.0` the hub prints a URL using this machine's LAN IP so a
 remote browser has a reachable address to open. Only bind to `0.0.0.0` on a
-network you trust — anyone who can reach the port can view the register snapshot.
+network you trust — anyone who can reach the port can view every viewer.
 
 ## Page tables (x86_64)
 
-The x86_64 page shows an extra **Page tables** section that walks the 4-level
-paging hierarchy live from `CR3`:
+The x86_64 page shows an extra **Page tables** section that walks the paging
+hierarchy live from `CR3`. The depth adapts to the target: **4-level, or 5-level
+(LA57)** — detected from `CR4.LA57` on each sync, with the section title showing
+which mode is active (so syzkaller/syzbot 5-level kernels walk correctly):
 
-1. Run `crviz sync` so the page has the current `CR3`.
-2. The tree shows the `PML4` root; click a node to expand it one level at a time
-   (`PML4 → PDPT → PD → PT`). Each expansion reads the pointed-to table (512
-   8-byte entries) over the gdb/QEMU monitor (`monitor xp`).
+1. Run `crviz sync` so the page has the current `CR3` (and `CR4`).
+2. The tree shows the root table (`PML4` on 4-level, `PML5` on 5-level); click a
+   node to expand it one level at a time (`PML4 → PDPT → PD → PT`, prefixed by
+   `PML5` under LA57). Each expansion reads the pointed-to table (512 8-byte
+   entries) over the gdb/QEMU monitor (`monitor xp`).
 3. Each row shows its index, raw entry value, decoded flags
    (`P/RW/US/PWT/PCD/A/D/PS/G/NX`), the next-level physical base, and the
    (canonical) virtual address it covers. A `PS` entry at PDPT/PD is a
@@ -210,8 +236,10 @@ can and reports a clear error otherwise (e.g. on a non-kernel target).
 ## Kernel VM map (kvmmap)
 
 `kernel/kvmmap/kvmmap_viz.py` is a `vmmap` for the kernel: it walks the current
-`CR3`'s 4-level page tables and coalesces contiguous mappings with identical
-permissions into regions.
+`CR3`'s page tables and coalesces contiguous mappings with identical permissions
+into regions. The **paging depth is auto-detected** — 4-level, or 5-level (LA57)
+as used by many syzkaller/syzbot kernels — so it works across kernel versions and
+configs without being told which layout is in use.
 
 ```gdb
 (gdb) source kernel/kvmmap/kvmmap_viz.py
@@ -225,17 +253,34 @@ reappearing at a regular VA stride, e.g. the vmemmap zero page → one `N × pag
 row instead of N identical lines). Each row shows VA start/end, size (or
 `N × page`), permissions (`r/w/x`, `u`ser vs `s`upervisor, `g`lobal) and a
 **region label** — user, kernel image, modules, direct map, vmalloc, vmemmap or
-vsyscall — coloured by area (pwntools-style). Rows in the **modules** region also
-get a **module** column with the owning module's name, resolved best-effort by
-scanning the kernel `modules` list from memory (needs kernel context; blank if it
-can't be read). Sort by any column; filter by region, perms or module name. The 1 s poll carries only a small summary; the collapsed list is fetched
-once per sync.
+vsyscall — coloured by area (pwntools-style). The **kernel image vs modules** split
+is measured from the mapping (the contiguous run that contains the kernel text
+anchor, i.e. `$pc`), not from a fixed boundary, so a KASLR-relocated image above
+the classic `0xffffffffa0000000` line is still labelled correctly. Rows in the
+**modules** region also get a **module** column with the owning module's name,
+resolved best-effort by scanning the kernel `modules` list from memory (needs
+kernel context; blank if it can't be read). Sort by any column; filter by region,
+perms or module name. The 1 s poll carries only a small summary; the collapsed
+list is fetched once per sync.
 
-Like the slab viewer this is **pure memory, no symbols**: `CR3` is a register and
-the page tables are read as physical memory over the QEMU monitor (`monitor xp`).
-Targets x86-64 4-level paging; region boundaries follow
-`Documentation/arch/x86/x86_64/mm.rst` and tolerate KASLR (the coarse windows are
-fixed even though the bases move).
+Like the slab viewer this is **pure memory, no symbols**. `CR3` is a register and
+the page tables are physical memory. They are read the fast way when possible: the
+viewer locates the kernel direct map (`page_offset_base`) with no symbols — the one
+top-level subtree that linearly maps RAM, found even under KASLR — and then reads
+each table as ordinary guest memory at `base + phys` over the binary gdb protocol
+instead of the `monitor xp` text command. On kernels whose direct map is split to
+4 KiB pages (`debug_pagealloc` / KASAN, common on syzkaller) this turns a ~30 s
+sync of thousands of tables into a couple of seconds; it falls back to `monitor xp`
+per table when the direct map can't be located. The page header shows which read
+path and base were used.
+
+Targets x86-64 long mode in either **4-level or 5-level (LA57) paging**, chosen
+from `CR4.LA57` and confirmed by whether the walk recovers the kernel-text mapping
+(so a wrong or unreadable `CR4` self-corrects). The current mode is shown next to
+`CR3` in the page header. Region boundaries follow
+`Documentation/arch/x86/x86_64/mm.rst` for the detected mode — the petabyte-scale
+direct map / vmalloc / vmemmap windows move under 5-level — and tolerate KASLR (the
+coarse windows are fixed even though the per-window bases move).
 
 ## Task list (task_struct)
 
@@ -395,8 +440,9 @@ address-region tests — so no viewer re-implements them.
   register names vary by target, so several name aliases are tried per register.
 - Register values are sent to the browser as hex strings and decoded with
   `BigInt`, so 64-bit values keep full precision.
-- The default ports differ per arch, so you can run more than one at a time; use
-  `<viz> start PORT` to override if a port is taken.
+- All viewers share one hub port; run as many as you like at once and switch
+  between them via the nav bar or the `/` landing page. Use `<viz> start PORT` to
+  move the hub if `8780` is taken.
 
 ## Typical QEMU setup
 

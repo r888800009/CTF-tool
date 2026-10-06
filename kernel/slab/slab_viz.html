@@ -169,7 +169,7 @@ function makeDetail(c) {
 
 async function poll() {
   try {
-    const r = await fetch("/data", { cache: "no-store" });
+    const r = await fetch("data", { cache: "no-store" });
     const j = await r.json();
     caches = j.caches || [];
     document.getElementById("synccmd").textContent = (j.prefix || "slabviz") + " sync";

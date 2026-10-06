@@ -66,7 +66,8 @@ _VMA_MAX = 4096            # BFS object budget when walking an mm's VMAs
 _VMA_OBJ = 256             # bytes read per candidate object during the VMA walk
 _VMA_HEAD = 96             # bytes of a VMA scanned to validate/locate vm_mm
 _VMA_RB_SCAN = 160         # bytes of a VMA scanned to locate the embedded vm_rb
-_USER_TOP = 0x0000800000000000  # exclusive upper bound of the canonical user half
+# Exclusive upper bound of the canonical user half; paging-mode aware (47-bit on
+# 4-level, 57-bit on 5-level/LA57) via kmem.user_top().
 
 # vm_area_struct.vm_flags bits (stable) → permission string.
 _VM_READ, _VM_WRITE, _VM_EXEC, _VM_SHARED = 0x1, 0x2, 0x4, 0x8
@@ -192,7 +193,7 @@ def _vma_at(addr, mm, buf=None):
             return None
     start = _u64(buf, 0)
     end = _u64(buf, 8)
-    if not (0 < start < end < _USER_TOP):
+    if not (0 < start < end < kmem.user_top()):
         return None
     if (start | end) & 0xFFF:
         return None
@@ -719,6 +720,7 @@ def _walk_tasks(anchor=None):
 
 
 def _task_sync(server, args=None):
+    kmem.reset_paging_cache()   # re-probe 4-/5-level paging for is_kheap()/user_top()
     anchor = None
     for tok in (args or []):
         try:

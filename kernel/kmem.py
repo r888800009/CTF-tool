@@ -58,13 +58,52 @@ def looks_like_name(s):
     return all(c.isalnum() or c in "-_.: /" for c in s) and any(c.isalnum() for c in s)
 
 
+_LA57 = None   # cached paging mode for this session (None = not yet probed)
+
+
+def la57():
+    """True if the CPU runs 5-level paging (CR4.LA57), else False.
+
+    Auto-detected from CR4 (bit 12) and cached — the kernel-half base moves from
+    0xffff800000000000 (4-level) down to 0xff00000000000000 (5-level), so the
+    region tests below must follow it. Cached because they run in tight scan
+    loops; re-sourcing a viewer reloads this module and clears the cache. When
+    CR4 can't be read we assume 4-level (the common case)."""
+    global _LA57
+    if _LA57 is None:
+        try:
+            cr4 = int(gdb.parse_and_eval("$cr4")) & 0xFFFFFFFFFFFFFFFF
+            _LA57 = bool((cr4 >> 12) & 1)      # cache only a successful read
+        except gdb.error:
+            return False                       # no target yet — retry next call
+    return _LA57
+
+
+def reset_paging_cache():
+    """Forget the cached paging mode (call after switching targets)."""
+    global _LA57
+    _LA57 = None
+
+
+def _kern_half_base():
+    """Lowest canonical kernel-half VA for the active paging mode."""
+    return 0xFF00000000000000 if la57() else 0xFFFF800000000000
+
+
+def user_top():
+    """Exclusive upper bound of the canonical user half for the active paging
+    mode: 47-bit (4-level) or 57-bit (5-level / LA57)."""
+    return 0x0100000000000000 if la57() else 0x0000800000000000
+
+
 def is_ktext(v):
     return 0xFFFFFFFF80000000 <= v <= 0xFFFFFFFFFFFFFFFF
 
 
 def is_kheap(v):
-    # kernel direct map / vmalloc: canonical high half, below the text window
-    return (v >> 48) == 0xFFFF and 0xFFFF800000000000 <= v < 0xFFFFFFFF80000000
+    # kernel direct map / vmalloc / vmemmap: canonical high half, below the text
+    # window. The lower bound tracks the paging mode (4- vs 5-level).
+    return _kern_half_base() <= v < 0xFFFFFFFF80000000
 
 
 def sym_addr(name):

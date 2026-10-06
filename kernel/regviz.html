@@ -21,7 +21,7 @@
   <div id="tip"></div>
 
   <!-- Per-arch register schema: sets window.REGS and window.REGVIZ_TITLE. -->
-  <script src="/regs.js"></script>
+  <script src="regs.js"></script>
   <script>
 // ---- Shared rendering engine ---------------------------------------------
 // A register schema entry (from /regs.js) may contain:
@@ -72,7 +72,7 @@ function buildModeSelector() {
     // re-render (which recreates nested nodes with the new level names).
     if (PT) {
       const rootLvl = document.querySelector("#pt-root > .pt-node > .pt-row > .pt-lvl");
-      if (rootLvl) rootLvl.textContent = levelName(PT.levels[0]);
+      if (rootLvl) rootLvl.textContent = levelName((PTA || PT).levels[0]);
     }
     rerenderLoaded();
   });
@@ -261,7 +261,7 @@ function render() {
 
 async function poll() {
   try {
-    const r = await fetch("/data", { cache: "no-store" });
+    const r = await fetch("data", { cache: "no-store" });
     const j = await r.json();
     for (const reg of REGS) {
       const raw = j.regs[reg.name];
@@ -298,11 +298,28 @@ const PT = window.REGVIZ_PAGETABLE || null;
 let syncCmd = "sync";
 let ptLastBase = null;
 
+// The active (depth-resolved) page-table config. When PT declares `variants`
+// (e.g. x86-64 4- vs 5-level), the depth is picked from a live mode register bit
+// — CR4.LA57 — so the walk adapts to the running kernel. Flat configs (no
+// variants) pass through unchanged, so other arches are unaffected.
+function activePT() {
+  if (!PT || !PT.variants) return PT;
+  let depth = PT.defaultDepth || "4";
+  if (PT.modeReg && PT.modeBit !== undefined) {
+    const mv = current[PT.modeReg];
+    if (mv !== null && mv !== undefined)
+      depth = ((BigInt(mv) >> BigInt(PT.modeBit)) & 1n) ? "5" : "4";
+  }
+  const v = PT.variants[depth] || PT.variants[PT.defaultDepth || "4"] || PT.variants["4"];
+  return Object.assign({}, PT, v);
+}
+let PTA = PT ? activePT() : null;
+
 function ptMask() { return BigInt(PT.baseMask); }
 function hx(v) { return "0x" + v.toString(16); }
 
 function canonical(va) {
-  const bit = BigInt(PT.canonicalBit !== undefined ? PT.canonicalBit : 47);
+  const bit = BigInt((PTA && PTA.canonicalBit !== undefined) ? PTA.canonicalBit : 47);
   if ((va >> bit) & 1n) return va | (((1n << (63n - bit)) - 1n) << (bit + 1n));
   return va & ((1n << (bit + 1n)) - 1n);
 }
@@ -412,7 +429,7 @@ function stampRow(rowEl, raw, level, i, va, kind) {
 function showPtTip(e, row) {
   const v = BigInt(row.dataset.ptv);
   const level = Number(row.dataset.ptlvl);
-  const lvl = PT.levels[level];
+  const lvl = (PTA || PT).levels[level];
   const fl = PT.flags || {};
   const lines = Object.keys(fl).map(Number).sort((a, b) => b - a).map((bit) => {
     const set = Number((v >> BigInt(bit)) & 1n);
@@ -447,6 +464,11 @@ function rerenderLoaded() {
 
 function updatePageTable() {
   if (!PT) return;
+  const prevTitle = PTA && PTA.title;
+  PTA = activePT();                        // re-pick 4- vs 5-level from CR4.LA57
+  const depthChanged = PTA && PTA.title !== prevTitle;
+  const h2 = document.querySelector("#pt h2");
+  if (h2 && PTA && PTA.title) h2.textContent = PTA.title;
   const base = current[PT.baseReg];
   const hint = document.getElementById("pt-hint");
   const rootEl = document.getElementById("pt-root");
@@ -455,14 +477,14 @@ function updatePageTable() {
     rootEl.innerHTML = ""; ptLastBase = null; return;
   }
   const tableBase = base & ptMask();
-  if (ptLastBase === tableBase) return;   // unchanged: keep the expanded tree
+  if (ptLastBase === tableBase && !depthChanged) return;  // unchanged: keep the tree
   ptLastBase = tableBase;
   hint.innerHTML =
     `${PT.baseReg} = <span class="pt-val">${hx(base)}</span> → ` +
-    `${levelName(PT.levels[0])} @ <span class="pt-val">${hx(tableBase)}</span>。` +
+    `${levelName(PTA.levels[0])} @ <span class="pt-val">${hx(tableBase)}</span>。` +
     `點擊節點逐層展開（透過 gdb monitor 讀實體記憶體）。`;
   rootEl.innerHTML = "";
-  rootEl.appendChild(makeNode(headHtml(levelName(PT.levels[0]), tableBase), tableBase, 0, 0n));
+  rootEl.appendChild(makeNode(headHtml(levelName(PTA.levels[0]), tableBase), tableBase, 0, 0n));
 }
 
 function headHtml(label, phys) {
@@ -521,7 +543,8 @@ function renderEntries(children) {
   const values = children._entries;
   const level = children._level;
   const vaAcc = children._va;
-  const lvl = PT.levels[level];
+  const AP = PTA || PT;
+  const lvl = AP.levels[level];
   const shift = BigInt(lvl.shift);
   const presentBit = BigInt(PT.presentBit !== undefined ? PT.presentBit : 0);
   const limit = Math.min(ptLimit(), values.length);
@@ -558,11 +581,11 @@ function renderEntries(children) {
       continue;
     }
     present++; shown++;
-    const isLast = !!lvl.leaf || level === PT.levels.length - 1;
+    const isLast = !!lvl.leaf || level === AP.levels.length - 1;
     const isLarge = !isLast && PT.largePageBit !== undefined
       && ((v >> BigInt(PT.largePageBit)) & 1n);
     const nextBase = v & ptMask();
-    const next = isLast ? null : levelName(PT.levels[level + 1]);
+    const next = isLast ? null : levelName(AP.levels[level + 1]);
     const bundle = copySpan(entryCmds(levelName(lvl), children._phys, i, va, nextBase, isLast || isLarge, next));
     const vaview = vaViewSpan(va);
     if (isLast || isLarge) {
