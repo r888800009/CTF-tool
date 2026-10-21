@@ -15,11 +15,20 @@ import http.server
 import json
 import re
 import socket
+import socketserver
 import threading
 import time
 import webbrowser
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+# ``ThreadingHTTPServer`` was added in Python 3.7.  Keep the visualizers
+# usable with older Python runtimes embedded in GDB.
+if not hasattr(http.server, "ThreadingHTTPServer"):
+    class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+
+    http.server.ThreadingHTTPServer = ThreadingHTTPServer
 
 import gdb  # provided by the gdb Python runtime
 
