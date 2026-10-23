@@ -139,24 +139,46 @@ let _hvSeq = 0;           // cascade offset for newly spawned windows
 const _HV_CHUNK = 40;     // instructions fetched per asm view / scroll-append
 const _HV_HEXBYTES = 512; // bytes per hex view / scroll step
 const _HV_HEXCAP = 0x8000;// stop growing a hex buffer past this many bytes
+const _HV_PREV_INSNS = 24;// instructions prepended per "往更前面" step
 
+// The address a disassembly line starts with (gdb prefixes the current pc "=> ").
+// Anchored at the line start so an operand like `mov eax,0x10` is never mistaken
+// for the instruction's address.
+function _hvLineAddr(line) {
+  const m = line.match(/^\s*(?:=>)?\s*(0x[0-9a-fA-F]+)/);
+  return m ? m[1] : null;
+}
 function _hvLastAddr(text) {
   const lines = text.replace(/\s+$/, "").split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
-    const m = lines[i].match(/0x[0-9a-fA-F]+/);
-    if (m) return m[0];
+    const a = _hvLineAddr(lines[i]);
+    if (a) return a;
   }
   return null;
 }
 function _hvTopAddr(text) {
-  const m = text.replace(/^\s+/, "").match(/0x[0-9a-fA-F]+/);
-  return m ? m[0] : null;
+  for (const l of text.split("\n")) {
+    const a = _hvLineAddr(l);
+    if (a) return a;
+  }
+  return null;
 }
 
 async function _hvFetch(addr, count) {
   const r = await fetch(`/disas?addr=${addr.replace(/^0x/, "")}&count=${count}`,
                         { cache: "no-store" });
   return r.json();
+}
+// The `count` instructions that come *before* `addr`. An instruction's length is
+// only known by decoding it, so walking backwards means decoding forward from a
+// run-up and checking the stream lands exactly on `addr`; gdb does that for us
+// server-side and returns ready `x/i` text.
+async function _hvFetchBefore(addr, count) {
+  try {
+    const r = await fetch(
+      `/disas?addr=${addr.replace(/^0x/, "")}&before=${count}`, { cache: "no-store" });
+    return r.json();
+  } catch (e) { return null; }
 }
 async function _hvReadHex(addr, n) {
   try {
@@ -276,7 +298,9 @@ async function _hvMoreAsm(win) {
   if (win._loading || win._atEnd || !win._lastAddr) return;
   win._loading = true;
   try {
-    const j = await _hvFetch(win._lastAddr, _HV_CHUNK + 1);
+    const cur = win._cur, from = win._lastAddr;
+    const j = await _hvFetch(from, _HV_CHUNK + 1);
+    if (win._cur !== cur || win._lastAddr !== from) return;    // navigated meanwhile
     if (!j.ok || !j.text) { win._atEnd = true; return; }
     const lines = j.text.replace(/\s+$/, "").split("\n").slice(1);  // drop dup first line
     const next = _hvLastAddr(lines.join("\n"));
@@ -287,27 +311,26 @@ async function _hvMoreAsm(win) {
   } finally { win._loading = false; }
 }
 
-// Prepend earlier instructions ("往更前面"). x86 is variable-length, so we
-// disassemble from a little before the top and keep the lines that land before it.
+// Prepend the instructions that come before the current top ("往更前面"),
+// keeping the view steady. Decoding from a fixed offset above the top (the old
+// behaviour) lands mid-instruction and prints a stream that never joins the code
+// on screen, so the server is asked for boundaries that provably do.
 async function _hvPrevAsm(win) {
   if (win._loading || win._atStart || !win._topAddr) return;
   win._loading = true;
+  const cur = win._cur, topHex = win._topAddr;
   try {
-    const start = "0x" + (BigInt(win._topAddr) - 0x40n).toString(16);
-    const j = await _hvFetch(start, 24);
-    if (!j.ok || !j.text) { win._atStart = true; return; }
-    const top = BigInt(win._topAddr);
-    const kept = j.text.replace(/\s+$/, "").split("\n").filter((l) => {
-      const m = l.match(/0x[0-9a-fA-F]+/);
-      return m && BigInt(m[0]) < top;
-    });
-    const newTop = kept.length ? kept[0].match(/0x[0-9a-fA-F]+/)[0] : null;
-    if (!newTop || BigInt(newTop) >= top) { win._atStart = true; return; }
+    const j = await _hvFetchBefore(topHex, _HV_PREV_INSNS);
+    if (win._cur !== cur || win._topAddr !== topHex) return;   // navigated meanwhile
+    if (!j || !j.ok || !j.text) { win._atStart = true; return; }
+    const lines = j.text.replace(/\s+$/, "").split("\n").filter(_hvLineAddr)
+                   .filter((l) => BigInt(_hvLineAddr(l)) < BigInt(topHex));
+    if (!lines.length) { win._atStart = true; return; }
     const body = win.querySelector(".hv-disbody");
     const oldH = body.scrollHeight, oldT = body.scrollTop;
-    body.insertAdjacentHTML("afterbegin", hvLinkifyDisas(kept.join("\n")) + "\n");
+    body.insertAdjacentHTML("afterbegin", hvLinkifyDisas(lines.join("\n")) + "\n");
     body.scrollTop = oldT + (body.scrollHeight - oldH);   // keep the view steady
-    win._topAddr = newTop;
+    win._topAddr = _hvLineAddr(lines[0]);
   } finally { win._loading = false; }
 }
 

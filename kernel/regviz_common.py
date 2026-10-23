@@ -295,6 +295,63 @@ def _va_perms(va):
     return {"present": False}
 
 
+# ---- walking a disassembly backwards --------------------------------------
+# Scrolling up needs the instructions *before* a known boundary, and on x86 the
+# bytes above it have no self-evident start. The way back is a run-up: decode
+# linearly from well before the boundary and require the stream to land exactly
+# on it ("剛好接上"). A start that is mid-instruction re-synchronises within a
+# few instructions, so with a run-up of _BACK_RUNUP bytes only the first handful
+# of decoded instructions can be wrong — and those are dropped, since just the
+# last `n` are returned. If a start does not line up at all, nudge it forward a
+# byte and retry; an instruction is at most _MAX_INSN bytes, so one of the first
+# _MAX_INSN starts must be on a real boundary.
+_MAX_INSN = 15      # longest x86 instruction — every other ISA here is shorter
+_BACK_RUNUP = 16    # run-up bytes per instruction asked for (~400B for a screenful)
+
+
+def _arch():
+    """The architecture of the current frame (falls back to the inferior)."""
+    try:
+        return gdb.selected_frame().architecture()
+    except gdb.error:
+        pass
+    return gdb.selected_inferior().architecture()
+
+
+def _decode_to(arch, start, addr):
+    """Instructions decoded from `start` that end exactly on the boundary `addr`,
+    or None when the stream is out of step with it (or the bytes are unreadable)."""
+    if start >= addr:
+        return None
+    try:
+        seq = arch.disassemble(start, addr - 1)
+    except Exception:  # noqa: BLE001 - unmapped bytes, unknown arch, …
+        return None
+    if not seq or seq[-1]["addr"] + seq[-1]["length"] != addr:
+        return None
+    return seq
+
+
+def _disas_before(addr, n):
+    """`x/i` text for (up to) the `n` instructions preceding `addr`."""
+    arch = _arch()
+    # A full run-up can reach into an unmapped page (near the start of a
+    # mapping), so fall back to shorter ones — fewer instructions, still aligned.
+    for runup in (n * _BACK_RUNUP, n * 4, _MAX_INSN * 4):
+        for k in range(_MAX_INSN):
+            start = addr - runup + k
+            if start < 0:
+                continue
+            seq = _decode_to(arch, start, addr)
+            if not seq:
+                continue
+            first = seq[-n:][0]["addr"]
+            out = gdb.execute("x/%di 0x%x" % (min(n, len(seq)), first),
+                              from_tty=False, to_string=True) or ""
+            return {"ok": True, "addr": "0x%x" % first, "text": out}
+    return {"ok": False, "error": "cannot decode backwards from 0x%x" % addr}
+
+
 def _read_reg(expr):
     """Return a register value as an unsigned int, or None if unavailable.
 
@@ -432,8 +489,15 @@ def _make_handler():
                 try:
                     addr = int(q.get("addr", ["0"])[0], 16)
                     count = max(1, min(int(q.get("count", ["24"])[0]), 256))
+                    before = max(0, min(int(q.get("before", ["0"])[0]), 64))
                 except ValueError:
                     self._send(400, b'{"ok":false,"error":"bad params"}', "application/json"); return
+                if before:
+                    # The instructions *before* `addr` (scrolling up in the viewer).
+                    res = call_on_main(lambda: _disas_before(addr, before))
+                    body = (res["result"] if res.get("ok")
+                            else {"ok": False, "error": res.get("error", "disassembly failed")})
+                    self._send(200, json.dumps(body).encode(), "application/json"); return
                 res = _run_on_main("x/%di 0x%x" % (count, addr))
                 body = ({"ok": True, "addr": "0x%x" % addr, "text": res.get("output", "")}
                         if res.get("ok") else {"ok": False, "error": res.get("error", "disassembly failed")})
